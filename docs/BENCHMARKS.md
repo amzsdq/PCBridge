@@ -94,6 +94,23 @@ Adopt:
 Reference:
 - https://docs.stripe.com/api/idempotent_requests
 
+## Runner ownership, leases and fencing
+
+Parrot's token-fenced runner idea matches a broader distributed-systems concern: a stale worker can wake up after a newer owner has taken over.
+
+Relevant references:
+- Kubernetes Lease / leader-election concepts: https://kubernetes.io/docs/concepts/architecture/leases/
+- etcd election API: https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/
+- Martin Kleppmann on fencing tokens: https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html
+
+Adopt:
+- one active owner per task generation
+- monotonically increasing generation/fencing token, not only a boolean lock
+- side-effect sinks compare/reject stale generations where feasible
+- lease/heartbeat primarily provides liveness; fencing protects correctness against delayed stale workers
+
+Decision: PCBridge is local-first, so this does not require a distributed consensus dependency. The same correctness principle should be implemented in the durable local task store.
+
 ## Retry / backoff
 
 Transient and throttling failures should use bounded exponential backoff; non-transient failures should fail fast. Retries are safe only when the operation is idempotent or otherwise fenced.
