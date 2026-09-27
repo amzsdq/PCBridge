@@ -196,6 +196,22 @@ Every human input exposes acknowledgement:
 
 A user should be able to steer work without breaking the autonomous loop merely to get the agent's attention.
 
+## 9.1 Agent-to-human attention
+
+Agents may need to tell the user something without forcing a chat interruption.
+
+Provide a durable Human Attention Inbox for:
+- informational notices
+- external action required
+- decision required (including explicit A/B choices)
+- questions
+- warnings
+- approval-required links
+
+Every notice remains visible in status/control surfaces until read/resolved and is never dependent on a transient popup.
+
+Popup/desktop notification behavior is user-configurable. When enabled, PCBridge may surface new attention items, but normal automation must still avoid focus stealing and fullscreen/game interruption. Popup dismissal does not resolve the underlying item.
+
 ## 10. Agent Control Plane
 
 Dashboard is functional, not decorative.
