@@ -19,6 +19,56 @@ Each operator message has acknowledgement states such as:
 
 The UI should show those states so the user does not need to ask whether an instruction was noticed.
 
+## Agent-to-human request / notice channel
+
+Agents also need a durable way to leave messages for the user without turning every message into an approval blocker.
+
+Define an operator-facing `Human Attention Inbox` with structured message types:
+
+- `INFO` — useful status or non-blocking notice.
+- `ACTION_REQUIRED` — user must do something external, e.g. create an account, install/sign in to a service, connect a device, or provide a missing resource.
+- `DECISION_REQUIRED` — user must choose between explicit options such as A/B.
+- `QUESTION` — information is needed before a branch can continue.
+- `WARNING` — important issue that does not itself require HARDLOCK approval.
+- `APPROVAL_REQUIRED` — links to the existing HARDLOCK approval flow rather than duplicating it.
+
+Each message should carry:
+- task/run identity
+- concise title
+- short actionable body
+- severity / urgency
+- blocking vs non-blocking
+- optional choices/actions
+- created/read/resolved timestamps
+- resolution result
+- source agent/component
+
+Examples:
+- “GitHub account sign-in is required before publishing.”
+- “Choose A or B before continuing this branch.”
+- “The game must be closed before replacing this file.”
+- “A browser re-authentication is required.”
+
+The status/dashboard must surface unresolved messages until resolved. Completed messages move to history.
+
+### Popup policy
+
+Popup behavior is user-configurable.
+
+Default:
+- persist every message in the Human Attention Inbox
+- do not steal focus
+- do not interrupt fullscreen applications
+
+Optional user settings:
+- pop up blocking requests only
+- pop up warnings + blocking requests
+- pop up all agent notices
+- notifications only / no popup
+- quiet/fullscreen suppression with deferred notification
+
+A popup is a presentation layer only. Closing or missing a popup must never lose the durable message.
+
 ## Safe-boundary consumption
 
 Between atomic units:
