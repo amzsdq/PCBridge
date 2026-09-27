@@ -1,6 +1,6 @@
 # Roadmap and verification gates
 
-## F0 — Repository and architecture foundation
+## M0 — Repository and architecture foundation
 Status: DONE
 
 Exit criteria:
@@ -14,25 +14,38 @@ Exit criteria:
 
 Verification: exact text equality confirmed for the five imported core C# baseline files after GitHub upload.
 
-## F1 — Durable exact relay
+## M1 — Autonomous Operation Ready
 Status: PENDING
 
+Objective:
+A user can give one instruction and PCBridge can continue useful work across multiple ChatGPT turns without manual baton-passing, while preserving exact targeting, duplicate safety, approval boundaries, restart recovery and foreground-user non-interference.
+
 Build:
-- provider abstraction
-- durable outbox/inbox identity
-- idempotency and fencing
-- strong receipt / ambiguous state
-- background DOM provider
-- transient/429/auth/target-mismatch recovery
+- exact-target browser/provider abstraction
+- durable relay outbox/inbox
+- run_id + monotonic seq + message_id
+- idempotent successor consumption and runner fencing
+- strong receipt / ambiguous-delivery reconciliation
+- transient/429/loading-failure backoff and recovery
+- background DOM provider that does not depend on the user's active Chrome tab
+- restart-safe pending handoff state
+- use the current non-HARDLOCK-auto path so ordinary development work can continue without repeated approval
 
 Verify in real authenticated ChatGPT:
-- exact target with other chats active
-- normal Chrome closed where supported
-- zero focus/input interference
-- duplicate/ambiguous cases
-- restart recovery
+- current turn completes and wakes the exact bound conversation
+- successor turn actually starts and continues the same run
+- repeated/duplicate delivery cannot create duplicate side effects
+- ambiguous delivery is reconciled instead of blindly resent
+- another ChatGPT conversation may be active without receiving the handoff
+- user Chrome may be closed where the selected provider supports its own authenticated session
+- typing, video playback and fullscreen games are not disturbed
+- no foreground focus, keyboard, mouse or visible PowerShell/console dependency
+- transient network/loading failures and 429 conditions recover with bounded backoff
+- bridge restart preserves pending handoff without unsafe replay
+- HARDLOCK still stops for explicit user approval
+- demonstrate multiple consecutive autonomous baton passes in one real task
 
-## F2 — Permission engine unification
+## M2 — Permission engine unification
 Status: PENDING
 
 Build:
@@ -47,7 +60,7 @@ Verify:
 - HARDLOCK families remain blocked
 - recovery integrity cannot be auto-destroyed
 
-## F3 — Approval broker and lifecycle UX
+## M3 — Approval broker and lifecycle UX
 Status: PENDING
 
 Build:
@@ -59,7 +72,7 @@ Build:
 - remove obsolete share-EXE surface
 - connection state machine UI
 
-## F4 — Human supervisor / operator control
+## M4 — Human supervisor / operator control
 Status: PENDING
 
 Build:
@@ -69,7 +82,7 @@ Build:
 - mini monitor
 - dashboard active/attention/history views
 
-## F5 — Durable task runtime / observability
+## M5 — Durable task runtime / observability
 Status: PENDING
 
 Build:
@@ -79,10 +92,10 @@ Build:
 - trace/span propagation
 - restart-safe execution ownership
 
-## F6 — Advanced orchestration
+## M6 — Advanced orchestration
 Status: DEFERRED
 
-Only after F1-F5 are verified:
+Only after M1-M5 are verified:
 - multiple agents/workers
 - workflow canvas/graph
 - richer scheduling/dependencies
