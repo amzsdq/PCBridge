@@ -297,20 +297,22 @@ Repeated identical retry without correcting the failure cause is not an acceptab
 - rollback path is exercised in tests
 - recovery-store destruction remains HARDLOCK
 
-## 16. Implementation priority
+## 16. Implementation milestones
 
-P0 — repository/spec/benchmarks/baseline foundation.
+M0 — repository/spec/benchmarks/baseline foundation. DONE.
 
-P1 — replace unsafe relay with exact durable background relay; this unlocks reliable self-handoff.
+M1 — Autonomous Operation Ready. This is the first implementation milestone and must be completed before broader feature work. It combines exact durable relay, successor-turn startup, duplicate fencing, transient-error recovery, restart safety, foreground-user non-interference, and continued use of the current non-HARDLOCK-auto execution path.
 
-P1 — unify legacy scoped-task permission path with ALLOW/CHECKPOINT/HARDLOCK and task grants.
+M1 acceptance requires a real task to cross multiple consecutive ChatGPT baton handoffs without manual user prompting, without wrong-chat delivery, duplicate work, visible console/PowerShell dependency, focus stealing, keyboard/mouse interference, or unsafe blind retries.
 
-P1 — fix approval broker lifecycle, multi-select and queued foreground attention.
+M2 — unify legacy scoped-task permission path with ALLOW/CHECKPOINT/HARDLOCK, task grants and automatic checkpoints.
 
-P2 — human supervisor inbox + mini monitor + dashboard status model.
+M3 — approval broker lifecycle, multi-select/bulk controls, queued attention and tray behavior.
 
-P2 — checkpoint/recovery adapters and richer provenance/authority risk modifiers.
+M4 — human supervisor inbox, mini monitor and dashboard/control-plane status model.
 
-P3 — multi-agent orchestration visualization and advanced workflow composition.
+M5 — durable task runtime, recovery adapters and structured observability.
 
-Do not start P3 because it looks impressive while P1 reliability remains unresolved.
+M6 — advanced multi-agent orchestration and workflow visualization.
+
+Do not begin M2+ implementation work until M1 is either completed or explicitly reprioritized by the user.
