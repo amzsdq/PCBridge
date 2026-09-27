@@ -1,6 +1,6 @@
 # PCBridge vNext — consolidated work specification
 
-Status: FOUNDATION / SPECIFICATION
+Status: FOUNDATION VERIFIED / IMPLEMENTATION GATED
 Source of truth: this document for product requirements; subsystem details live in the linked docs.
 
 ## 1. Product intent
