@@ -1,7 +1,7 @@
 # Roadmap and verification gates
 
 ## F0 — Repository and architecture foundation
-Status: IN_PROGRESS
+Status: DONE
 
 Exit criteria:
 - current source baseline preserved in GitHub
@@ -11,6 +11,8 @@ Exit criteria:
 - Parrot reviewed critically
 - distributed-systems/browser/HITL benchmarks recorded
 - repository contents re-read from GitHub to verify writes
+
+Verification: exact text equality confirmed for the five imported core C# baseline files after GitHub upload.
 
 ## F1 — Durable exact relay
 Status: PENDING
