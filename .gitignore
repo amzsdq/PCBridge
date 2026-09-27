@@ -1,0 +1,47 @@
+# Secrets / auth / local state
+*.dpapi
+*.key
+*.secret
+.env
+.env.*
+playwright/.auth/
+**/storage-state*.json
+
+# Build/runtime artifacts
+*.exe
+*.dll
+*.zip
+*.log
+*.tmp
+*.new
+bin/
+obj/
+dist/
+out/
+runtime/
+desktop-data/
+IntegrationFixtures/
+ScopeFixtures/
+TestArtifacts/
+
+# Generated test/status artifacts
+*-status.json
+*-launch.json
+integration-tests.json
+protocol-tests.json
+scope-tests.json
+self-relay-status.txt
+uia-*.txt
+
+# Dependencies / vendored runtime
+node_modules/
+engine/node.exe
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+.DS_Store
