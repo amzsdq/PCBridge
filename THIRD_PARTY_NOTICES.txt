@@ -528,3 +528,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+CHAT ON STEROIDS REFERENCE/DERIVED-CODE NOTICE
+Upstream: https://github.com/totec448-spec/chat-on-steroids
+Pinned M1 review commit: a1879601684712cbc3d6100ee4fe2dacbdf1b7b4
+License: MIT. Full upstream license is preserved at third_party/chat-on-steroids/LICENSE.
+PCBridge does not bundle the upstream application wholesale; any selectively derived code must retain provenance in third_party/chat-on-steroids/README.md.
