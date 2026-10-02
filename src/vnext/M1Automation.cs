@@ -369,6 +369,25 @@ public sealed class AutomationStateStore {
   });
  }
 
+ public AutomationHandoff FailTerminal(
+  string runId,long generation,string messageId,string reason) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(IsTerminalHandoff(h.state))return CloneHandoff(h);
+   h.state="FAILED_TERMINAL";
+   h.error_class=Required(reason,"reason",1000);
+   h.updated_utc=Utc();
+   run.status="WAITING_HUMAN";
+   run.attention=h.error_class;
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
  public AutomationHandoff CancelForHuman(
   string runId,long generation,string messageId,string reason) {
   return Locked<AutomationHandoff>(delegate {
