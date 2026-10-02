@@ -7,6 +7,8 @@ on:
       - 'tests/M1AutomationTests.cs'
       - 'src/vnext/M1BrowserProfile.cs'
       - 'tests/M1BrowserProfileTests.cs'
+      - 'tests/M1BrowserBrokerTests.cs'
+      - 'src/vnext/M1BrowserBroker.cs'
       - 'provider/chatgpt-extension/**'
       - 'tests/m1-browser-companion-contract.mjs'
       - '.github/workflows/m1-coordinator.yml'
@@ -57,3 +59,18 @@ jobs:
         run: |
           node tests/m1-browser-companion-contract.mjs
           if ($LASTEXITCODE -ne 0) { throw "M1 browser companion contract failed" }
+
+      - name: Compile M1 browser broker tests
+        shell: powershell
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $automation = (Resolve-Path 'src\vnext\M1Automation.cs').Path
+          $broker = (Resolve-Path 'src\vnext\M1BrowserBroker.cs').Path
+          $test = (Resolve-Path 'tests\M1BrowserBrokerTests.cs').Path
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1BrowserBrokerTests.exe /reference:System.Web.Extensions.dll /reference:System.Security.dll $automation $broker $test
+          if ($LASTEXITCODE -ne 0) { throw "M1 browser broker compilation failed" }
+      - name: Run M1 browser broker tests
+        shell: powershell
+        run: |
+          & .\M1BrowserBrokerTests.exe
+          if ($LASTEXITCODE -ne 0) { throw "M1 browser broker tests failed" }
