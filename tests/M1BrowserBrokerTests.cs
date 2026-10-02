@@ -162,7 +162,42 @@ static class M1BrowserBrokerTests {
    Request(broker.Port,"POST","/v1/authorize",origin,token,new{command_id=id,conversation_id=run.target.conversation_id,document_epoch="doc-b",payload_hash=h.payload_hash});
    var amb=Request(broker.Port,"POST","/v1/event",origin,token,new{command_id=id,kind="ambiguous",conversation_id=run.target.conversation_id,document_epoch="doc-b",payload_hash=h.payload_hash,error="receipt_unconfirmed"});
    Check(amb.Item1==200 && store.GetRun(run.run_id).handoffs[0].state=="AMBIGUOUS","ambiguous send fenced");
-   Check(!store.CanAutoDispatch(run.run_id,run.generation,h.message_id),"ambiguous send not auto-dispatchable");
+   Check(!store.CanAutoDispatch(run.run_id,run.generation,h.message_id),"ambiguous send never enters auto-resend path");
+
+   var reconcile=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(reconcile,"kind")=="reconcile_ambiguous" && S(reconcile,"text").Contains(h.message_id),
+     "ambiguous send produces receipt reconciliation command, not send command");
+   var late=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=S(reconcile,"id"),kind="ambiguous_delivered",conversation_id=run.target.conversation_id,
+    document_epoch="doc-reconcile",user_message_id="late-user-row"
+   });
+   var recovered=store.GetRun(run.run_id).handoffs[0];
+   Check(late.Item1==200 && recovered.state=="USER_RECEIPT_CONFIRMED" &&
+         recovered.provider_user_message_id=="late-user-row","late exact receipt resolves ambiguity without duplicate send");
+   var observe=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(observe,"kind")=="observe_response","resolved ambiguity advances only to response observation");
+  }
+
+  var unresolvedRun=store.CreateRun(Target("unresolved"));
+  var unresolved=store.QueueHandoff(unresolvedRun.run_id,unresolvedRun.generation,"a","b","c","none");
+  store.BindSourceTurn(unresolvedRun.run_id,unresolvedRun.generation,unresolved.message_id,"src-u","turn-u","doc-u");
+  store.MarkSourceTerminal(unresolvedRun.run_id,unresolvedRun.generation,unresolved.message_id,"src-u","turn-u","doc-u");
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);broker.Publish(unresolvedRun.run_id,unresolvedRun.generation,unresolved.message_id);
+   var send=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   string id=S(send,"id");
+   Request(broker.Port,"POST","/v1/event",origin,token,new{command_id=id,kind="composer_claimed",conversation_id=unresolvedRun.target.conversation_id,document_epoch="doc-u2",payload_hash=unresolved.payload_hash});
+   Request(broker.Port,"POST","/v1/authorize",origin,token,new{command_id=id,conversation_id=unresolvedRun.target.conversation_id,document_epoch="doc-u2",payload_hash=unresolved.payload_hash});
+   Request(broker.Port,"POST","/v1/event",origin,token,new{command_id=id,kind="ambiguous",conversation_id=unresolvedRun.target.conversation_id,document_epoch="doc-u2",payload_hash=unresolved.payload_hash,error="receipt_unconfirmed"});
+   var reconcile=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   var unresolvedResult=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=S(reconcile,"id"),kind="ambiguous_unresolved",conversation_id=unresolvedRun.target.conversation_id,
+    document_epoch="doc-u3",error="exact_receipt_not_observed_after_reload"
+   });
+   var state=store.GetRun(unresolvedRun.run_id);
+   Check(unresolvedResult.Item1==200 && state.handoffs[0].state=="FAILED_TERMINAL" &&
+         state.status=="WAITING_HUMAN","unresolved ambiguity escalates instead of auto-resending");
   }
 
   var retryRun=store.CreateRun(Target("retry"));
@@ -177,7 +212,60 @@ static class M1BrowserBrokerTests {
     command_id=S(send,"id"),kind="pre_send_failed",conversation_id=retryRun.target.conversation_id,
     document_epoch="doc-r2",payload_hash=retry.payload_hash,error="composer_not_ready"
    });
-   Check(failed.Item1==200 && store.GetRun(retryRun.run_id).handoffs[0].state=="PRE_SEND_RETRY","pre-send failure remains retryable");
+   var retryState=store.GetRun(retryRun.run_id).handoffs[0];
+   Check(failed.Item1==200 && retryState.state=="PRE_SEND_RETRY" &&
+         retryState.recovery_attempt==1 && retryState.next_attempt_utc.Length>0,
+         "pre-send failure schedules durable bounded retry");
+   var early=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(early==null,"recovery command is not offered before next_attempt_utc");
+   Thread.Sleep(5400);
+   var recover=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(recover,"kind")=="recover_target","due pre-send retry becomes exact-target recovery, not direct Send");
+   var ready=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=S(recover,"id"),kind="target_recovered",conversation_id=retryRun.target.conversation_id,
+    document_epoch="doc-r3"
+   });
+   Check(ready.Item1==200 && store.GetRun(retryRun.run_id).handoffs[0].state=="TARGET_READY",
+     "successful target recovery returns to pre-Send target-ready stage");
+   var resend=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(resend,"kind")=="send_handoff","only a proven pre-Send failure may return to native Send");
+  }
+
+  var rateRun=store.CreateRun(Target("ratelimit"));
+  var rate=store.QueueHandoff(rateRun.run_id,rateRun.generation,"a","b","c","none");
+  store.BindSourceTurn(rateRun.run_id,rateRun.generation,rate.message_id,"src-rate","turn-rate","doc-rate");
+  store.MarkSourceTerminal(rateRun.run_id,rateRun.generation,rate.message_id,"src-rate","turn-rate","doc-rate");
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);broker.Publish(rateRun.run_id,rateRun.generation,rate.message_id);
+   var send=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   var limited=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=S(send,"id"),kind="provider_rate_limited",conversation_id=rateRun.target.conversation_id,
+    document_epoch="doc-rate2",payload_hash=rate.payload_hash,error="too many requests",retry_after_seconds=900
+   });
+   var limitedState=store.GetRun(rateRun.run_id).handoffs[0];
+   Check(limited.Item1==200 && limitedState.state=="RATE_LIMITED" &&
+         limitedState.next_attempt_utc.Length>0 && limitedState.recovery_attempt==1,
+         "provider rate limit is durably backed off before Send");
+   var noHammer=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(noHammer==null,"rate-limited command is not hammered before durable due time");
+  }
+
+  var authRun=store.CreateRun(Target("auth"));
+  var authH=store.QueueHandoff(authRun.run_id,authRun.generation,"a","b","c","none");
+  store.BindSourceTurn(authRun.run_id,authRun.generation,authH.message_id,"src-auth","turn-auth","doc-auth");
+  store.MarkSourceTerminal(authRun.run_id,authRun.generation,authH.message_id,"src-auth","turn-auth","doc-auth");
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);broker.Publish(authRun.run_id,authRun.generation,authH.message_id);
+   var send=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   var blocked=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=S(send,"id"),kind="provider_auth_required",conversation_id=authRun.target.conversation_id,
+    document_epoch="doc-auth2",payload_hash=authH.payload_hash,error="sign-in required"
+   });
+   var blockedRun=store.GetRun(authRun.run_id);
+   Check(blocked.Item1==200 && blockedRun.handoffs[0].state=="BLOCKED_AUTH" &&
+         blockedRun.status=="BLOCKED_AUTH","authentication challenge stops automatic Send and requires human attention");
   }
  }
 
