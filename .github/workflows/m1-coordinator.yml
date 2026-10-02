@@ -3,6 +3,12 @@ name: M1 Coordinator Contract
 on:
   push:
     paths:
+      - 'src/current/PCBridgePortable.cs'
+      - 'src/current/ScopedBridge.cs'
+      - 'src/current/DesktopIntegration.cs'
+      - 'src/current/ScopeTests.cs'
+      - 'src/current/IntegrationTests.cs'
+      - 'src/current/M1Integration.cs'
       - 'src/vnext/M1Automation.cs'
       - 'tests/M1AutomationTests.cs'
       - 'src/vnext/M1BrowserProfile.cs'
@@ -18,6 +24,12 @@ on:
       - '.github/workflows/m1-coordinator.yml'
   pull_request:
     paths:
+      - 'src/current/PCBridgePortable.cs'
+      - 'src/current/ScopedBridge.cs'
+      - 'src/current/DesktopIntegration.cs'
+      - 'src/current/ScopeTests.cs'
+      - 'src/current/IntegrationTests.cs'
+      - 'src/current/M1Integration.cs'
       - 'src/vnext/M1Automation.cs'
       - 'src/vnext/M1AutomationRuntime.cs'
       - 'src/vnext/M1SessionBinding.cs'
@@ -120,3 +132,23 @@ jobs:
         run: |
           & .\M1AutomationRuntimeTests.exe
           if ($LASTEXITCODE -ne 0) { throw "M1 automation runtime tests failed" }
+
+      - name: Compile current PCBridge with M1 surface
+        shell: powershell
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $sources = @(
+            (Resolve-Path 'src\current\PCBridgePortable.cs').Path,
+            (Resolve-Path 'src\current\ScopedBridge.cs').Path,
+            (Resolve-Path 'src\current\ScopeTests.cs').Path,
+            (Resolve-Path 'src\current\DesktopIntegration.cs').Path,
+            (Resolve-Path 'src\current\IntegrationTests.cs').Path,
+            (Resolve-Path 'src\current\M1Integration.cs').Path,
+            (Resolve-Path 'src\vnext\M1Automation.cs').Path,
+            (Resolve-Path 'src\vnext\M1SessionBinding.cs').Path,
+            (Resolve-Path 'src\vnext\M1BrowserProfile.cs').Path,
+            (Resolve-Path 'src\vnext\M1BrowserBroker.cs').Path,
+            (Resolve-Path 'src\vnext\M1AutomationRuntime.cs').Path
+          )
+          & $csc /nologo /target:winexe /platform:x64 /optimize+ /out:PCBridgeM1SurfaceCompile.exe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:System.Security.dll /reference:System.IO.Compression.dll $sources
+          if ($LASTEXITCODE -ne 0) { throw "Current PCBridge + M1 surface compilation failed" }
