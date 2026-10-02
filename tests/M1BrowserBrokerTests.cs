@@ -14,84 +14,221 @@ static class M1BrowserBrokerTests {
   req.Method=method;req.Proxy=null;req.Timeout=5000;req.ReadWriteTimeout=5000;
   req.Headers["Origin"]=origin;req.Headers["X-PCBridge-Protocol"]=M1BrowserBroker.Protocol;
   if(!String.IsNullOrEmpty(token))req.Headers["Authorization"]="Bearer "+token;
-  if(body!=null){byte[] bytes=Encoding.UTF8.GetBytes(Json(body));req.ContentType="application/json";req.ContentLength=bytes.Length;using(var s=req.GetRequestStream())s.Write(bytes,0,bytes.Length);}
-  try{using(var resp=(HttpWebResponse)req.GetResponse())using(var sr=new StreamReader(resp.GetResponseStream()))return Tuple.Create((int)resp.StatusCode,sr.ReadToEnd());}
-  catch(WebException e){using(var resp=(HttpWebResponse)e.Response)using(var sr=new StreamReader(resp.GetResponseStream()))return Tuple.Create((int)resp.StatusCode,sr.ReadToEnd());}
+  if(body!=null){
+   byte[] bytes=Encoding.UTF8.GetBytes(Json(body));
+   req.ContentType="application/json";req.ContentLength=bytes.Length;
+   using(var s=req.GetRequestStream())s.Write(bytes,0,bytes.Length);
+  }
+  try{
+   using(var resp=(HttpWebResponse)req.GetResponse())
+   using(var sr=new StreamReader(resp.GetResponseStream()))
+    return Tuple.Create((int)resp.StatusCode,sr.ReadToEnd());
+  } catch(WebException e) {
+   using(var resp=(HttpWebResponse)e.Response)
+   using(var sr=new StreamReader(resp.GetResponseStream()))
+    return Tuple.Create((int)resp.StatusCode,sr.ReadToEnd());
+  }
  }
  static Dictionary<string,object> Obj(string json){return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(json);}
+ static Dictionary<string,object> Command(string json){
+  var outer=Obj(json);object raw;
+  if(!outer.TryGetValue("command",out raw)||raw==null)return null;
+  return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(Json(raw));
+ }
+ static string S(IDictionary<string,object> obj,string key){object v;return obj!=null&&obj.TryGetValue(key,out v)&&v!=null?Convert.ToString(v):"";}
  static AutomationTarget Target(string suffix){return new AutomationTarget{provider="chatgpt",provider_profile_id="profile_"+suffix,conversation_id="12345678-abcd-4abc-8abc-"+suffix.PadRight(12,'0').Substring(0,12)};}
+ static string Pair(int port,string origin) {
+  var pair=Request(port,"POST","/pair",origin,"",new{protocol=M1BrowserBroker.Protocol});
+  Check(pair.Item1==200,"extension paired");
+  string token=S(Obj(pair.Item2),"token");
+  Check(token.Length>20,"pair token length");
+  return token;
+ }
 
- public static int Main(string[] args){
+ static void TestFullLifecycle(string root) {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("fullflow"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"phase one","phase two","verified","none");
+
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();
+   Check(broker.Port>0,"broker bound ephemeral loopback port");
+   const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+   var hello=Request(broker.Port,"GET","/hello",origin,"",null);
+   Check(hello.Item1==200 && hello.Item2.Contains(M1BrowserBroker.Protocol),"hello protocol");
+   var badPair=Request(broker.Port,"POST","/pair","https://evil.example","",new{protocol=M1BrowserBroker.Protocol});
+   Check(badPair.Item1==403,"web origin cannot pair");
+   string token=Pair(broker.Port,origin);
+
+   broker.Publish(run.run_id,run.generation,h.message_id);
+   var gate=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(gate,"kind")=="gate_current_turn","first command gates current turn");
+   string gateId=S(gate,"id");
+   Check(gateId==h.message_id+":gate","gate command stage identity");
+
+   var bound=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=gateId,kind="source_bound",conversation_id=run.target.conversation_id,
+    document_epoch="doc-source",user_message_id="user-source-1",response_turn_id="turn-source-1"
+   });
+   Check(bound.Item1==200,"source turn bound");
+   var state=store.GetRun(run.run_id).handoffs[0];
+   Check(state.state=="WAIT_CURRENT_TURN_END" && state.source_user_message_id=="user-source-1","source ownership persisted");
+
+   var ended=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=gateId,kind="source_terminal",conversation_id=run.target.conversation_id,
+    document_epoch="doc-source",user_message_id="user-source-1",response_turn_id="turn-source-1"
+   });
+   Check(ended.Item1==200,"source terminal accepted");
+   Check(store.GetRun(run.run_id).handoffs[0].state=="TARGET_READY","source terminal opens target");
+
+   var send=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(send,"kind")=="send_handoff" && S(send,"id")==h.message_id+":send","send stage auto-published");
+   string sendId=S(send,"id");
+
+   var claim=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=sendId,kind="composer_claimed",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",payload_hash=h.payload_hash,rebound=false
+   });
+   Check(claim.Item1==200 && store.GetRun(run.run_id).handoffs[0].state=="COMPOSER_CLAIMED","composer claim persisted");
+
+   var auth=Request(broker.Port,"POST","/v1/authorize",origin,token,new{
+    command_id=sendId,conversation_id=run.target.conversation_id,document_epoch="doc-send",payload_hash=h.payload_hash
+   });
+   Check(auth.Item1==200 && auth.Item2.Contains("dispatch_intent_durable"),"dispatch authorization durable");
+   Check(store.GetRun(run.run_id).handoffs[0].state=="SEND_DISPATCHED","dispatch intent persisted before click");
+
+   var delivered=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=sendId,kind="delivered",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",payload_hash=h.payload_hash,user_message_id="user-handoff-1"
+   });
+   Check(delivered.Item1==200,"delivery receipt accepted");
+   state=store.GetRun(run.run_id).handoffs[0];
+   Check(state.state=="USER_RECEIPT_CONFIRMED" && state.provider_user_message_id=="user-handoff-1","provider receipt ownership persisted");
+
+   var observe=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(observe,"kind")=="observe_response" && S(observe,"user_message_id")=="user-handoff-1","response observer auto-published");
+   string observeId=S(observe,"id");
+
+   var started=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=observeId,kind="response_started",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",user_message_id="user-handoff-1",response_turn_id="turn-response-1"
+   });
+   Check(started.Item1==200,"response ownership bound");
+   state=store.GetRun(run.run_id).handoffs[0];
+   Check(state.state=="TURN_RUNNING" && state.response_turn_id=="turn-response-1","response turn persisted");
+
+   var observed=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=observeId,kind="terminal_observed",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",user_message_id="user-handoff-1",response_turn_id="turn-response-1"
+   });
+   Check(observed.Item1==200 && store.GetRun(run.run_id).handoffs[0].state=="TERMINAL_OBSERVED","terminal observation provisional");
+
+   var resumed=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=observeId,kind="turn_running",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",user_message_id="user-handoff-1",response_turn_id="turn-response-1"
+   });
+   Check(resumed.Item1==200 && store.GetRun(run.run_id).handoffs[0].state=="TURN_RUNNING","reopened response revokes provisional terminal");
+
+   Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=observeId,kind="terminal_observed",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",user_message_id="user-handoff-1",response_turn_id="turn-response-1"
+   });
+   var confirmed=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=observeId,kind="terminal_confirmed",conversation_id=run.target.conversation_id,
+    document_epoch="doc-send",user_message_id="user-handoff-1",response_turn_id="turn-response-1"
+   });
+   state=store.GetRun(run.run_id).handoffs[0];
+   Check(confirmed.Item1==200 && state.state=="TERMINAL_CONFIRMED" && state.terminal_utc.Length>0,"terminal confirmed for exact response");
+
+   var after=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(after==null,"terminal command not reoffered");
+  }
+ }
+
+ static void TestAmbiguityAndPreSend(string root) {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("ambiguity"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"a","b","c","none");
+  store.BindSourceTurn(run.run_id,run.generation,h.message_id,"source-a","source-turn-a","doc-a");
+  store.MarkSourceTerminal(run.run_id,run.generation,h.message_id,"source-a","source-turn-a","doc-a");
+
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);broker.Publish(run.run_id,run.generation,h.message_id);
+   var send=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   string id=S(send,"id");
+   Request(broker.Port,"POST","/v1/event",origin,token,new{command_id=id,kind="composer_claimed",conversation_id=run.target.conversation_id,document_epoch="doc-b",payload_hash=h.payload_hash});
+   Request(broker.Port,"POST","/v1/authorize",origin,token,new{command_id=id,conversation_id=run.target.conversation_id,document_epoch="doc-b",payload_hash=h.payload_hash});
+   var amb=Request(broker.Port,"POST","/v1/event",origin,token,new{command_id=id,kind="ambiguous",conversation_id=run.target.conversation_id,document_epoch="doc-b",payload_hash=h.payload_hash,error="receipt_unconfirmed"});
+   Check(amb.Item1==200 && store.GetRun(run.run_id).handoffs[0].state=="AMBIGUOUS","ambiguous send fenced");
+   Check(!store.CanAutoDispatch(run.run_id,run.generation,h.message_id),"ambiguous send not auto-dispatchable");
+  }
+
+  var retryRun=store.CreateRun(Target("retry"));
+  var retry=store.QueueHandoff(retryRun.run_id,retryRun.generation,"a","b","c","none");
+  store.BindSourceTurn(retryRun.run_id,retryRun.generation,retry.message_id,"source-r","source-turn-r","doc-r");
+  store.MarkSourceTerminal(retryRun.run_id,retryRun.generation,retry.message_id,"source-r","source-turn-r","doc-r");
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);broker.Publish(retryRun.run_id,retryRun.generation,retry.message_id);
+   var send=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   var failed=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=S(send,"id"),kind="pre_send_failed",conversation_id=retryRun.target.conversation_id,
+    document_epoch="doc-r2",payload_hash=retry.payload_hash,error="composer_not_ready"
+   });
+   Check(failed.Item1==200 && store.GetRun(retryRun.run_id).handoffs[0].state=="PRE_SEND_RETRY","pre-send failure remains retryable");
+  }
+ }
+
+ static void TestSourceSupersessionAndRestart(string root) {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("supersede"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"a","b","c","none");
+  using(var broker=new M1BrowserBroker(store,0)) {
+   broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);broker.Publish(run.run_id,run.generation,h.message_id);
+   var gate=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   string id=S(gate,"id");
+   Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=id,kind="source_bound",conversation_id=run.target.conversation_id,
+    document_epoch="doc-s",user_message_id="source-s",response_turn_id="turn-s"
+   });
+   var superseded=Request(broker.Port,"POST","/v1/event",origin,token,new{
+    command_id=id,kind="source_superseded",conversation_id=run.target.conversation_id,
+    document_epoch="doc-s",user_message_id="source-s",response_turn_id="turn-s"
+   });
+   var state=store.GetRun(run.run_id);
+   Check(superseded.Item1==200 && state.handoffs[0].state=="CANCELLED" && state.status=="WAITING_HUMAN","new human input supersedes pre-send baton");
+  }
+
+  var recover=store.CreateRun(Target("recover"));
+  var rh=store.QueueHandoff(recover.run_id,recover.generation,"a","b","c","none");
+  store.BindSourceTurn(recover.run_id,recover.generation,rh.message_id,"src-rec","turn-rec","doc-rec");
+  // Simulate broker restart while waiting on the exact source turn.
+  using(var broker=new M1BrowserBroker(new AutomationStateStore(root),0)) {
+   broker.Start();int published=broker.RepublishRecoverable();
+   Check(published>=1,"recoverable durable handoff republished after broker restart");
+   const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+   string token=Pair(broker.Port,origin);
+   var cmd=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   Check(S(cmd,"kind")=="gate_current_turn" && S(cmd,"user_message_id")=="src-rec","restart reoffers exact source gate");
+  }
+ }
+
+ public static int Main(string[] args) {
   string root=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"M1BrokerTestArtifacts","run-"+Guid.NewGuid().ToString("N"));
   Directory.CreateDirectory(root);
-  try{
-   var store=new AutomationStateStore(root);
-   var run=store.CreateRun(Target("broker"));
-   var h=store.QueueHandoff(run.run_id,run.generation,"phase one","phase two","verified","none");
-   store.Advance(run.run_id,run.generation,h.message_id,"WAIT_CURRENT_TURN_END","","");
-   store.Advance(run.run_id,run.generation,h.message_id,"TARGET_READY","","");
-
-   using(var broker=new M1BrowserBroker(store,0)){
-    broker.Start();Check(broker.Port>0,"broker bound ephemeral loopback port");
-    const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
-    var hello=Request(broker.Port,"GET","/hello",origin,"",null);
-    Check(hello.Item1==200 && hello.Item2.Contains(M1BrowserBroker.Protocol),"hello protocol");
-
-    var badPair=Request(broker.Port,"POST","/pair","https://evil.example","",new{protocol=M1BrowserBroker.Protocol});
-    Check(badPair.Item1==403,"web origin cannot pair");
-
-    var pair=Request(broker.Port,"POST","/pair",origin,"",new{protocol=M1BrowserBroker.Protocol});
-    var pairObj=Obj(pair.Item2);string token=Convert.ToString(pairObj["token"]);
-    Check(pair.Item1==200 && token.Length>20,"extension paired");
-
-    broker.Publish(run.run_id,run.generation,h.message_id);
-    var cmd=Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null);
-    Check(cmd.Item1==200 && cmd.Item2.Contains(h.message_id),"ready handoff published");
-
-    var claim=Request(broker.Port,"POST","/v1/event",origin,token,new{
-      command_id=h.message_id,kind="composer_claimed",conversation_id=run.target.conversation_id,
-      document_epoch="doc-one",payload_hash=h.payload_hash
-    });
-    Check(claim.Item1==200,"composer claim accepted");
-    Check(store.GetRun(run.run_id).handoffs[0].state=="COMPOSER_CLAIMED","composer claim persisted");
-
-    var auth=Request(broker.Port,"POST","/v1/authorize",origin,token,new{
-      command_id=h.message_id,conversation_id=run.target.conversation_id,document_epoch="doc-one",payload_hash=h.payload_hash
-    });
-    Check(auth.Item1==200 && auth.Item2.Contains("dispatch_intent_durable"),"dispatch authorization durable");
-    Check(store.GetRun(run.run_id).handoffs[0].state=="SEND_DISPATCHED","dispatch intent persisted before browser click");
-
-    var amb=Request(broker.Port,"POST","/v1/event",origin,token,new{
-      command_id=h.message_id,kind="ambiguous",conversation_id=run.target.conversation_id,
-      document_epoch="doc-one",error="receipt_unconfirmed"
-    });
-    Check(amb.Item1==200,"ambiguous receipt accepted");
-    Check(store.GetRun(run.run_id).handoffs[0].state=="AMBIGUOUS","ambiguity persisted and fenced");
-
-    var after=Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null);
-    Check(!after.Item2.Contains(h.message_id),"ambiguous command not reoffered");
-   }
-
-   // Pre-Send failure is retryable and never becomes SEND_DISPATCHED.
-   var retryRun=store.CreateRun(Target("retry"));
-   var retry=store.QueueHandoff(retryRun.run_id,retryRun.generation,"a","b","c","none");
-   store.Advance(retryRun.run_id,retryRun.generation,retry.message_id,"WAIT_CURRENT_TURN_END","","");
-   store.Advance(retryRun.run_id,retryRun.generation,retry.message_id,"TARGET_READY","","");
-   using(var broker=new M1BrowserBroker(store,0)){
-    broker.Start();const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
-    var pair=Obj(Request(broker.Port,"POST","/pair",origin,"",new{protocol=M1BrowserBroker.Protocol}).Item2);
-    string token=Convert.ToString(pair["token"]);broker.Publish(retryRun.run_id,retryRun.generation,retry.message_id);
-    var failed=Request(broker.Port,"POST","/v1/event",origin,token,new{
-      command_id=retry.message_id,kind="pre_send_failed",conversation_id=retryRun.target.conversation_id,
-      document_epoch="doc-two",error="composer_not_ready"
-    });
-    Check(failed.Item1==200,"pre-send failure accepted");
-    Check(store.GetRun(retryRun.run_id).handoffs[0].state=="PRE_SEND_RETRY","pre-send failure remains retryable");
-   }
-
+  try {
+   TestFullLifecycle(root);
+   TestAmbiguityAndPreSend(root);
+   TestSourceSupersessionAndRestart(root);
    Console.WriteLine("M1 browser broker tests PASS: "+passed);
    Console.WriteLine("state_root="+root);
    return 0;
-  }catch(Exception e){Console.Error.WriteLine(e.ToString());return 1;}
+  } catch(Exception e) {
+   Console.Error.WriteLine(e.ToString());
+   return 1;
+  }
  }
 }
