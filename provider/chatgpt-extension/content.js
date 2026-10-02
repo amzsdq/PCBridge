@@ -32,11 +32,18 @@
       const authorized=await sendRuntime({type:'pcbridge.m1.authorize',
         command_id:command.id,conversation_id:command.conversation_id,
         document_epoch:documentEpoch,payload_hash:command.payload_hash});
-      if (!authorized?.ok || !prepared.draft.current()) return;
+      if (!authorized?.ok) return;
+      if (!prepared.draft.current()) {
+        await sendRuntime({type:'pcbridge.m1.event',event:{
+          command_id:command.id,kind:'ambiguous',error:'lease_lost_after_dispatch_intent',
+          conversation_id:DOM.conversationId(),document_epoch:documentEpoch
+        }});
+        return;
+      }
       const result=await DOM.dispatchPrepared(command,prepared);
       await sendRuntime({type:'pcbridge.m1.event',event:{
         command_id:command.id,
-        kind:result.status==='delivered' ? 'delivered' : result.status==='ambiguous' ? 'ambiguous' : 'pre_send_failed',
+        kind:result.status==='delivered' ? 'delivered' : 'ambiguous',
         error:result.error || '',user_message_id:result.user_message_id || '',
         conversation_id:result.conversation_id || DOM.conversationId(),document_epoch:documentEpoch
       }});
