@@ -32,3 +32,14 @@ jobs:
         run: |
           & .\M1AutomationTests.exe
           if ($LASTEXITCODE -ne 0) { throw "M1 coordinator tests failed" }
+      - name: Compile isolated browser profile tests
+        shell: powershell
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1BrowserProfileTests.exe src/vnext/M1BrowserProfile.cs tests/M1BrowserProfileTests.cs
+          if ($LASTEXITCODE -ne 0) { throw "M1 browser profile compilation failed" }
+      - name: Run isolated browser profile tests
+        shell: powershell
+        run: |
+          & .\M1BrowserProfileTests.exe
+          if ($LASTEXITCODE -ne 0) { throw "M1 browser profile tests failed" }
