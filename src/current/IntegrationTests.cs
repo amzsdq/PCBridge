@@ -16,6 +16,23 @@ static class IntegrationTests {
   Core.Prepare();ScopeEngine.ServerStart();DesktopIntegration.Start();Assert(Core.Load()==null,"No credentials in fresh bundle");passed.Add("fresh isolated bundle has no API key or inherited settings");
   var catalog=O(DesktopIntegration.Call("desktop_tools",A()));var tools=(IList)catalog["tools"];Assert(tools.Count>=20,"Desktop tools discovered");passed.Add("real bundled Node + Desktop Commander initialized over stdio; "+tools.Count+" upstream tools discovered");
   Assert(DesktopIntegration.Tools().Any(x=>Core.Json().Serialize(x).Contains("\"desktop_relay\"")),"desktop_relay schema missing");var relayStatus=O(DesktopIntegration.Call("desktop_relay",A("action","status")));Assert(relayStatus.ContainsKey("binding")&&relayStatus.ContainsKey("latest"),"desktop_relay status shape invalid");passed.Add("built-in desktop_relay tool is registered and status is queryable without UI side effects");
+  var allSchemas=ScopeEngine.Tools().Select(x=>Core.Json().Serialize(x)).ToArray();
+  Assert(allSchemas.Any(x=>x.Contains("\"automation_prepare\""))&&allSchemas.Any(x=>x.Contains("\"automation_handoff\""))&&allSchemas.Any(x=>x.Contains("\"automation_complete\"")),"M1 automation schemas missing");
+  string automationSession="integration-session-"+Guid.NewGuid().ToString("N");
+  var prepare=O(M1McpIntegration.Call("automation_prepare",A("session_id",automationSession)));
+  Assert((string)prepare["state"]=="BINDING_REQUIRED","unbound M1 session must fail closed");
+  var binding=O(prepare["binding"]);string bindingId=(string)binding["binding_id"];
+  const string automationConversation="12345678-abcd-4abc-8abc-123456789012";
+  M1McpIntegration.Runtime.Bindings.ProposeCandidate(bindingId,automationConversation,"integration-document");
+  M1McpIntegration.Runtime.ConfirmBindingLocal(bindingId,automationConversation,"chatgpt-default");
+  var handoff=O(M1McpIntegration.Call("automation_handoff",A("session_id",automationSession,"summary","verified integration work","next_action","continue integration work","verification","integration fixture checked","blocking_state","none")));
+  Assert((string)handoff["state"]=="HANDOFF_QUEUED"&&!String.IsNullOrWhiteSpace((string)handoff["message_id"]),"M1 handoff was not durably queued");
+  string m1Run=(string)handoff["run_id"];long m1Generation=Convert.ToInt64(handoff["generation"]);string m1Message=(string)handoff["message_id"];
+  var repeat=O(M1McpIntegration.Call("automation_handoff",A("run_id",m1Run,"generation",m1Generation,"summary","verified integration work","next_action","continue integration work","verification","integration fixture checked","blocking_state","none")));
+  Assert(Convert.ToBoolean(repeat["existing"])&&(string)repeat["message_id"]==m1Message,"M1 run-fenced duplicate did not remain idempotent");
+  var complete=O(M1McpIntegration.Call("automation_complete",A("run_id",m1Run,"generation",m1Generation,"verification","integration fixture completed before Send")));
+  Assert((string)complete["status"]=="COMPLETED","M1 completion did not cancel unsent baton and terminate run");
+  passed.Add("M1 MCP surface binds locally, queues durable handoff, resumes by run fence and completes idempotently");
   string work=Path.Combine(Path.GetDirectoryName(Core.Self),"IntegrationFixtures",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);string file=Path.Combine(work,"한국어.txt");
   var req=O(Request("write_file",new{path=file,content="PCBridge 통합 검증 ✓",mode="rewrite"}));Assert((string)req["state"]=="approved","ordinary write should auto-approve");Wait(req);Assert(File.ReadAllText(file).Contains("통합 검증"),"UTF8 write failed");passed.Add("non-HARDLOCK write auto-runs without local approval; Unicode content verified");
   bool denied=false;try{DesktopIntegration.Call("desktop_result",A("request_token","other-chat"));}catch{denied=true;}Assert(denied,"bad token accepted");passed.Add("another caller without request capability cannot read result");
@@ -34,5 +51,5 @@ static class IntegrationTests {
   var proc=Approved("start_process",new{command="Start-Sleep -Seconds 32; Write-Output 'PCBRIDGE_LONG_JOB_OK'",timeout_ms=1000,shell="powershell.exe"});var ps=(string)proc["result_json"];var match=System.Text.RegularExpressions.Regex.Match(ps,@"PID:?\s*(\d+)",System.Text.RegularExpressions.RegexOptions.IgnoreCase);if(!match.Success)throw new Exception("PID missing: "+ps);int pid=Int32.Parse(match.Groups[1].Value);Thread.Sleep(33000);var output=Approved("read_process_output",new{pid=pid,timeout_ms=1000});Assert(((string)output["result_json"]).Contains("PCBRIDGE_LONG_JOB_OK"),"long process output missing");passed.Add("process survives >30 seconds and output is retrievable");
   var config=File.ReadAllText(Path.Combine(Core.Root,"engine","node_modules","@wonderwhy-er","desktop-commander","dist","config.js"));Assert(config.Contains("PCBRIDGE_DC_DATA"),"data path patch absent");Assert(Directory.Exists(Path.Combine(Core.Root,"desktop-data")),"isolated config absent");passed.Add("Desktop Commander private config remains isolated");
   File.WriteAllText(report,Core.Json().Serialize(new{ok=true,version=Core.Version,tests=passed,root=Core.Root}));return 0;
- }catch(Exception e){File.WriteAllText(report,Core.Json().Serialize(new{ok=false,tests=passed,error=e.ToString(),root=Core.Root}));return 1;}finally{DesktopIntegration.Stop();}}
+ }catch(Exception e){File.WriteAllText(report,Core.Json().Serialize(new{ok=false,tests=passed,error=e.ToString(),root=Core.Root}));return 1;}finally{M1McpIntegration.Stop();DesktopIntegration.Stop();}}
 }
