@@ -7,6 +7,8 @@ on:
       - 'tests/M1AutomationTests.cs'
       - 'src/vnext/M1BrowserProfile.cs'
       - 'tests/M1BrowserProfileTests.cs'
+      - 'provider/chatgpt-extension/**'
+      - 'tests/m1-browser-companion-contract.mjs'
       - '.github/workflows/m1-coordinator.yml'
   pull_request:
     paths:
@@ -49,3 +51,9 @@ jobs:
         run: |
           & .\M1BrowserProfileTests.exe
           if ($LASTEXITCODE -ne 0) { throw "M1 browser profile tests failed" }
+
+      - name: Run M1 browser companion contract
+        shell: powershell
+        run: |
+          node tests/m1-browser-companion-contract.mjs
+          if ($LASTEXITCODE -ne 0) { throw "M1 browser companion contract failed" }
