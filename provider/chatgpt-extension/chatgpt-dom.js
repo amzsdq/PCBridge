@@ -130,24 +130,174 @@
     const listed=node.getAttribute?.('data-chatgpt-search-message-ids') || '';
     return listed.trim().split(/\s+/).find(Boolean) || null;
   }
-  function userMessages() {
+  function searchUnitRole(node) {
+    const key=node?.getAttribute?.('data-content-search-unit-key') || node?.getAttribute?.('data-chatgpt-search-unit-key') || '';
+    if (/:user$/.test(key)) return 'user';
+    if (/:assistant$/.test(key)) return 'assistant';
+    return node?.getAttribute?.('data-message-author-role') || null;
+  }
+
+  function turnIdOf(node) {
+    if (!node) return null;
+    if (node.matches?.(SHELL_TURN)) {
+      const key=node.getAttribute('data-turn-key');
+      if (key && !/^fallback-turn-\d+$/.test(key)) return key;
+      return node.querySelector('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key') || null;
+    }
+    if (node.matches?.(SEARCH_TURN))
+      return node.closest?.('[data-turn-key]')?.getAttribute?.('data-turn-key') || messageIdOf(node) || null;
+    return node.getAttribute?.('data-turn-id') || null;
+  }
+
+  function logicalTurns() {
     return safe(() => {
-      const out=[], seen=new Set();
-      for (const node of [...document.querySelectorAll('[data-message-author-role="user"][data-message-id]')].filter(n => !onKeptPage(n))) {
-        const id=messageIdOf(node); if (!id || seen.has(id)) continue;
-        seen.add(id); out.push({id,text:normalized(node.textContent),node});
-      }
-      for (const slot of document.querySelectorAll(`${SHELL_TURN} [data-content-search-unit-key$=":user"]`)) {
-        if (onKeptPage(slot)) continue;
-        const owner=slot.closest('[data-turn-key]');
-        if (!owner || slot.closest('[data-turn-key]')!==owner) continue;
-        const id=messageIdOf(slot); if (!id || seen.has(id)) continue;
-        seen.add(id);
-        const bubble=slot.querySelector('[data-user-message-bubble]') || slot;
-        out.push({id,text:normalized(bubble.textContent),node:slot});
+      const out=[];
+      let previous=null;
+      for (const node of document.querySelectorAll(TURN)) {
+        if (onKeptPage(node)) continue;
+        if (node.matches?.(SEARCH_TURN) && (node.closest?.(LEGACY_TURN) || node.closest?.(SHELL_TURN))) continue;
+        const id=turnIdOf(node);
+        if (node.matches?.(SHELL_TURN)) {
+          const users=[...node.querySelectorAll('[data-content-search-unit-key$=":user"]')]
+            .filter(slot => slot.closest('[data-turn-key]')===node);
+          const answered=node.querySelector('[data-chatgpt-agent-turn-start], [data-content-search-unit-key$=":assistant"]');
+          if (users.length!==1 || !id) { previous=null; continue; }
+          out.push({node:users[0],nodes:[users[0]],exchange:node,id,role:'user'});
+          if (answered) out.push({node, nodes:[node], exchange:node,id,role:'assistant'});
+          previous=null;
+          continue;
+        }
+        const role=node.getAttribute?.('data-turn') || searchUnitRole(node) ||
+          node.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role') || null;
+        if (role!=='user' && role!=='assistant') { previous=null; continue; }
+        if (previous && id && previous.id===id && previous.role===role) {
+          previous.nodes.push(node);
+          continue;
+        }
+        previous={node,nodes:[node],exchange:null,id,role};
+        out.push(previous);
       }
       return out;
     }, []);
+  }
+
+  function messagesForTurn(turn) {
+    return safe(() => {
+      if (!turn) return [];
+      const selectors=turn.role==='user'
+        ? '[data-message-author-role="user"][data-message-id], [data-content-search-unit-key$=":user"], [data-chatgpt-search-unit-key$=":user"]'
+        : '[data-message-author-role="assistant"][data-message-id], [data-content-search-unit-key$=":assistant"], [data-chatgpt-search-unit-key$=":assistant"]';
+      const result=[], seen=new Set();
+      for (const root of turn.nodes || [turn.node]) {
+        if (!root) continue;
+        const candidates=[...(root.matches?.(selectors) ? [root] : []),...root.querySelectorAll?.(selectors) || []];
+        for (const node of candidates) {
+          if (onKeptPage(node)) continue;
+          const role=node.getAttribute?.('data-message-author-role') || searchUnitRole(node) || turn.role;
+          if (role!==turn.role) continue;
+          const id=messageIdOf(node);
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          const bubble=role==='user' ? node.querySelector?.('[data-user-message-bubble]') || node : node;
+          result.push({id,role,text:normalized(bubble.textContent),turn_id:turn.id,node});
+        }
+      }
+      return result;
+    }, []);
+  }
+
+  function assistantFinalText(turn) {
+    return safe(() => {
+      if (!turn || turn.role!=='assistant') return '';
+      const parts=[];
+      for (const root of turn.nodes || [turn.node]) {
+        for (const node of root?.querySelectorAll?.('.markdown') || []) {
+          if (node.closest?.('[data-interrupted], [data-message-author-role="user"], [data-content-search-unit-key$=":user"]')) continue;
+          const value=normalized(node.textContent);
+          if (value && parts.at(-1)!==value) parts.push(value);
+        }
+      }
+      if (parts.length) return parts.at(-1);
+      const explicit=messagesForTurn(turn).map(row=>row.text).filter(Boolean);
+      return explicit.at(-1) || '';
+    }, '');
+  }
+
+  function userMessages() {
+    return safe(() => {
+      const out=[],seen=new Set();
+      for (const turn of logicalTurns()) {
+        if (turn.role!=='user') continue;
+        for (const row of messagesForTurn(turn)) {
+          if (seen.has(row.id)) continue;
+          seen.add(row.id);out.push(row);
+        }
+      }
+      return out;
+    }, []);
+  }
+
+  function responseSnapshot(userMessageId, expectedTurnId='') {
+    return safe(() => {
+      const turns=logicalTurns();
+      let userIndex=-1,userTurn=null,userRow=null;
+      for (let i=0;i<turns.length;i++) {
+        if (turns[i].role!=='user') continue;
+        const row=messagesForTurn(turns[i]).find(item=>item.id===userMessageId);
+        if (row) { userIndex=i;userTurn=turns[i];userRow=row;break; }
+      }
+      if (!userTurn || !userRow || !userTurn.id) return {found:false,superseded:false,started:false,terminal_candidate:false};
+
+      let latestUserId=userMessageId;
+      let superseded=false;
+      for (let i=userIndex+1;i<turns.length;i++) {
+        if (turns[i].role!=='user') continue;
+        const rows=messagesForTurn(turns[i]);
+        if (rows.length) {
+          latestUserId=rows.at(-1).id;
+          if (latestUserId!==userMessageId) superseded=true;
+        }
+      }
+
+      const candidates=[];
+      for (let i=userIndex+1;i<turns.length;i++) {
+        const turn=turns[i];
+        if (turn.role==='user') break;
+        if (turn.role==='assistant' && turn.id===userTurn.id) candidates.push(turn);
+      }
+      if (candidates.length!==1) {
+        return {
+          found:true,user_message_id:userMessageId,response_turn_id:userTurn.id,
+          latest_user_message_id:latestUserId,superseded,started:false,terminal_candidate:false
+        };
+      }
+      const response=candidates[0];
+      if (expectedTurnId && expectedTurnId!==response.id) {
+        return {
+          found:true,user_message_id:userMessageId,response_turn_id:response.id,
+          latest_user_message_id:latestUserId,superseded:true,started:true,terminal_candidate:false,
+          conflict:'response_turn_mismatch'
+        };
+      }
+      const finalText=assistantFinalText(response);
+      const assistantIds=messagesForTurn(response).map(row=>row.id).join(',');
+      const signature=response.id+'|'+assistantIds+'|'+finalText.length+'|'+finalText.slice(-160);
+      return {
+        found:true,user_message_id:userMessageId,response_turn_id:response.id,
+        latest_user_message_id:latestUserId,superseded,started:true,
+        terminal_candidate:!superseded && !generating() && finalText.length>0,
+        terminal_signature:signature
+      };
+    }, {found:false,superseded:false,started:false,terminal_candidate:false});
+  }
+
+  function latestUserResponseSnapshot(expectedUserId='',expectedTurnId='') {
+    const users=userMessages();
+    const latest=users.at(-1);
+    if (!latest) return {found:false,superseded:false,started:false,terminal_candidate:false};
+    if (expectedUserId && latest.id!==expectedUserId)
+      return {found:true,user_message_id:expectedUserId,latest_user_message_id:latest.id,superseded:true,started:false,terminal_candidate:false};
+    return responseSnapshot(latest.id,expectedTurnId);
   }
 
   function insertPrompt(value, failure=()=>undefined) {
@@ -260,6 +410,7 @@
 
   globalThis.PCBridgeChatGPTDOM=Object.freeze({
     conversationFromPath,conversationId,composer,composerReady,composerVisible,composerWritable,
-    generating,sendButton,userMessages,insertPrompt,captureDraft,prepareSend,dispatchPrepared,compact
+    generating,sendButton,logicalTurns,messagesForTurn,userMessages,responseSnapshot,latestUserResponseSnapshot,
+    insertPrompt,captureDraft,prepareSend,dispatchPrepared,compact
   });
 })();
