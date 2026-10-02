@@ -1,6 +1,6 @@
 # M1 — Autonomous Operation Ready
 
-Status: SPEC READY / IMPLEMENTATION NOT STARTED
+Status: IMPLEMENTATION IN PROGRESS — M1.0–M1.5 contracts implemented and isolated integration-tested; M1.6 live hardening / M1.7 acceptance pending
 Date: 2026-10-02
 Parent: `VNEXT_SPEC.md`
 Research basis: `research/COS_PARROT_M1_REVIEW_2026-10-02.md`
@@ -471,6 +471,29 @@ Before the first copied code lands:
 - update `THIRD_PARTY_NOTICES.txt`
 
 ## 20. Implementation units
+
+### Current implementation checkpoint — 2026-10-03
+
+- M1.0: implemented
+- M1.1: implemented; durable coordinator/restart/idempotency tests passing
+- M1.2: manager implemented; live companion-capable browser runtime installation/login still pending
+- M1.3: companion implemented; DOM/send/receipt/response ownership contract tests passing
+- M1.4: coordinator/provider integration implemented; isolated runtime and full current+M1 build tests passing
+- M1.5: recovery/backpressure state machine implemented for pre-Send retry, rate limit, load/offline, auth block and ambiguous-delivery reconciliation; deterministic tests passing
+- M1.6: static no-focus/no-SendKeys provider path enforced, but live fullscreen/game/resource acceptance still pending
+- M1.7: not started; requires real authenticated 10+ baton campaign
+
+Latest isolated verification includes:
+- coordinator contract PASS
+- browser profile PASS
+- browser companion contract PASS
+- browser broker PASS, including repeated local runs and CI
+- session binding/runtime PASS
+- fresh full integrated EXE self-test/integration-test PASS
+- reproducible payload packager verifies the four companion entries by SHA256 before build
+
+The existing foreground `desktop_relay` remains legacy/emergency behavior and is not the M1 provider. M1 is not considered DONE and has not cut over to live default operation.
+
 
 ### M1.0 — Upstream/provenance fixture
 - pin CoS commit and Parrot reference commit
