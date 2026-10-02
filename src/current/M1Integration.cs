@@ -40,7 +40,8 @@ static class M1McpIntegration {
     if(runtime==null) {
      string configured=Environment.GetEnvironmentVariable("PCBRIDGE_M1_BROWSER_EXE");
      string companion=Path.Combine(Core.Root,"provider","chatgpt-extension");
-     runtime=new M1AutomationRuntime(Core.Root,configured,companion);
+     int[] ports=Core.Instance.StartsWith("PCBridge-Integrated-Test-",StringComparison.Ordinal)?new[]{0}:null;
+     runtime=new M1AutomationRuntime(Core.Root,configured,companion,ports);
      runtime.Start();
     }
     return runtime;
