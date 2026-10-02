@@ -243,13 +243,14 @@ Requirements:
 - browser can be absent before the run
 - no dependence on whichever user browser/tab currently has focus
 
-Preferred executable order:
-1. configured browser
-2. installed Chrome
-3. installed Edge
-4. otherwise Human Attention: browser setup required
+Selected runtime policy:
+1. explicitly configured companion-capable Chromium runtime
+2. PCBridge-managed Chrome for Testing / compatible Chromium runtime
+3. otherwise Human Attention: browser runtime setup required
 
-Do not silently install a browser in M1.
+Do **not** silently fall back to the user's normal installed Chrome/Edge. Chrome removed `--load-extension` from branded builds in Chrome 137 and `--disable-extensions-except` from branded builds in Chrome 139, so relying on those flags against the user's ordinary browser is both unreliable and contrary to the non-interference goal.
+
+The M1 provider should use a PCBridge-owned testing/runtime browser with a dedicated profile. Download/install of that runtime is a separate reversible setup action and should not occur silently while the user is gaming or otherwise bandwidth-sensitive.
 
 ### 8.2 Background/non-interference
 Normal provider operation must not:
