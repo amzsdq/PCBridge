@@ -3,18 +3,19 @@ using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
-using Microsoft.Win32;
 
 public sealed class M1BrowserCandidate {
  public string name="";
  public string executable="";
  public string source="";
+ public bool companion_capable;
 }
 
 public sealed class M1BrowserLaunchPlan {
  public string browser="";
  public string executable="";
  public string profile_root="";
+ public string extension_root="";
  public string arguments="";
  public bool start_minimized=true;
 }
@@ -22,15 +23,25 @@ public sealed class M1BrowserLaunchPlan {
 public sealed class M1BrowserProfileManager {
  readonly string root;
  readonly string profileRoot;
+ readonly string configuredExecutable;
+ readonly string extensionRoot;
  const string MarkerText="PCBridge M1 dedicated browser profile v1";
 
- public M1BrowserProfileManager(string pcbridgeRoot) {
+ public M1BrowserProfileManager(string pcbridgeRoot)
+  : this(pcbridgeRoot,Environment.GetEnvironmentVariable("PCBRIDGE_M1_BROWSER_EXE"),null) {}
+
+ public M1BrowserProfileManager(string pcbridgeRoot,string browserExecutable,string companionExtensionRoot) {
   if(String.IsNullOrWhiteSpace(pcbridgeRoot))throw new ArgumentException("pcbridgeRoot");
   root=Path.GetFullPath(pcbridgeRoot);
   profileRoot=Path.Combine(root,"browser","chatgpt-default");
+  configuredExecutable=String.IsNullOrWhiteSpace(browserExecutable)?"":Path.GetFullPath(browserExecutable);
+  extensionRoot=Path.GetFullPath(String.IsNullOrWhiteSpace(companionExtensionRoot)
+   ? Path.Combine(root,"provider","chatgpt-extension")
+   : companionExtensionRoot);
  }
 
  public string ProfileRoot { get { return profileRoot; } }
+ public string ExtensionRoot { get { return extensionRoot; } }
 
  public void EnsureOwnedProfile() {
   string marker=Path.Combine(profileRoot,".pcbridge-browser-profile");
@@ -47,21 +58,32 @@ public sealed class M1BrowserProfileManager {
   if(File.ReadAllText(marker)!=MarkerText)throw new InvalidOperationException("browser_profile_marker_write_failed");
  }
 
+ public void ValidateCompanion() {
+  if(!Directory.Exists(extensionRoot))throw new InvalidOperationException("browser_companion_missing");
+  string manifest=Path.Combine(extensionRoot,"manifest.json");
+  if(!File.Exists(manifest))throw new InvalidOperationException("browser_companion_manifest_missing");
+  string text=File.ReadAllText(manifest);
+  if(text.IndexOf("\"manifest_version\"",StringComparison.Ordinal)<0 ||
+     text.IndexOf("\"PCBridge M1 ChatGPT Companion\"",StringComparison.Ordinal)<0)
+   throw new InvalidOperationException("browser_companion_manifest_invalid");
+ }
+
  public List<M1BrowserCandidate> Discover() {
   var result=new List<M1BrowserCandidate>();
-  Add(result,"chrome",RegistryPath(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"),"HKCU App Paths");
-  Add(result,"chrome",RegistryPath(@"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"),"HKLM App Paths");
-  Add(result,"edge",RegistryPath(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),"HKCU App Paths");
-  Add(result,"edge",RegistryPath(@"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),"HKLM App Paths");
+  Add(result,"configured",configuredExecutable,"explicit",true);
 
-  string local=Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-  string pf=Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-  string pfx86=Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-  Add(result,"chrome",Path.Combine(local,"Google","Chrome","Application","chrome.exe"),"standard");
-  Add(result,"chrome",Path.Combine(pf,"Google","Chrome","Application","chrome.exe"),"standard");
-  Add(result,"chrome",Path.Combine(pfx86,"Google","Chrome","Application","chrome.exe"),"standard");
-  Add(result,"edge",Path.Combine(pf,"Microsoft","Edge","Application","msedge.exe"),"standard");
-  Add(result,"edge",Path.Combine(pfx86,"Microsoft","Edge","Application","msedge.exe"),"standard");
+  // Chrome branded builds removed --load-extension in Chrome 137 and
+  // --disable-extensions-except in Chrome 139. M1 therefore only auto-selects
+  // a PCBridge-managed/testing Chromium runtime where unpacked companion loading
+  // is an intentional supported use case.
+  string[] owned = new[] {
+   Path.Combine(root,"browser-runtime","chrome-for-testing","chrome-win64","chrome.exe"),
+   Path.Combine(root,"browser-runtime","chrome-for-testing","chrome.exe"),
+   Path.Combine(root,"runtime","chrome-for-testing","chrome-win64","chrome.exe"),
+   Path.Combine(root,"runtime","chrome-for-testing","chrome.exe"),
+   Path.Combine(root,"browser-runtime","chromium","chrome.exe")
+  };
+  foreach(string path in owned)Add(result,"pcbridge-chromium",path,"pcbridge-runtime",true);
 
   return result
    .Where(delegate(M1BrowserCandidate x){return File.Exists(x.executable);})
@@ -70,30 +92,29 @@ public sealed class M1BrowserProfileManager {
    .ToList();
  }
 
- public M1BrowserCandidate Select(string preferred) {
-  var browsers=Discover();
-  string want=(preferred??"chrome").Trim().ToLowerInvariant();
-  var selected=browsers.FirstOrDefault(delegate(M1BrowserCandidate x){return x.name==want;});
-  if(selected==null && want!="chrome")selected=browsers.FirstOrDefault(delegate(M1BrowserCandidate x){return x.name=="chrome";});
-  if(selected==null)selected=browsers.FirstOrDefault(delegate(M1BrowserCandidate x){return x.name=="edge";});
-  if(selected==null)throw new InvalidOperationException("browser_setup_required");
+ public M1BrowserCandidate Select() {
+  var selected=Discover().FirstOrDefault(delegate(M1BrowserCandidate x){return x.companion_capable;});
+  if(selected==null)throw new InvalidOperationException("browser_runtime_required");
   return selected;
  }
 
- public M1BrowserLaunchPlan Plan(string preferred,string initialUrl) {
+ public M1BrowserLaunchPlan Plan(string initialUrl) {
   EnsureOwnedProfile();
-  var b=Select(preferred);
+  ValidateCompanion();
+  var b=Select();
   string url=String.IsNullOrWhiteSpace(initialUrl)?"https://chatgpt.com/":ValidateUrl(initialUrl);
   string args=
    "--user-data-dir="+Quote(profileRoot)+" "+
    "--profile-directory=Default "+
-   "--no-first-run --no-default-browser-check --start-minimized "+
-   "--disable-background-networking=false "+
+   "--no-first-run --no-default-browser-check --disable-sync --start-minimized "+
+   "--disable-extensions-except="+Quote(extensionRoot)+" "+
+   "--load-extension="+Quote(extensionRoot)+" "+
    Quote(url);
   return new M1BrowserLaunchPlan {
    browser=b.name,
    executable=Path.GetFullPath(b.executable),
    profile_root=profileRoot,
+   extension_root=extensionRoot,
    arguments=args,
    start_minimized=true
   };
@@ -103,6 +124,7 @@ public sealed class M1BrowserProfileManager {
   if(plan==null)throw new ArgumentNullException("plan");
   if(!File.Exists(plan.executable))throw new FileNotFoundException("browser executable missing",plan.executable);
   if(Path.GetFullPath(plan.profile_root)!=profileRoot)throw new InvalidOperationException("browser_profile_mismatch");
+  if(Path.GetFullPath(plan.extension_root)!=extensionRoot)throw new InvalidOperationException("browser_extension_mismatch");
   return new ProcessStartInfo(plan.executable,plan.arguments) {
    UseShellExecute=false,
    CreateNoWindow=true,
@@ -120,18 +142,11 @@ public sealed class M1BrowserProfileManager {
          !ours.Equals(Path.GetFullPath(edgeNormal).TrimEnd(Path.DirectorySeparatorChar),StringComparison.OrdinalIgnoreCase);
  }
 
- static string RegistryPath(string key) {
-  try {
-   object v=Registry.GetValue(key,"",null);
-   return v==null?"":Convert.ToString(v);
-  } catch { return ""; }
- }
-
- static void Add(List<M1BrowserCandidate> list,string name,string path,string source) {
+ static void Add(List<M1BrowserCandidate> list,string name,string path,string source,bool capable) {
   if(String.IsNullOrWhiteSpace(path))return;
   try {
    string full=Path.GetFullPath(path.Trim().Trim('"'));
-   if(File.Exists(full))list.Add(new M1BrowserCandidate{name=name,executable=full,source=source});
+   if(File.Exists(full))list.Add(new M1BrowserCandidate{name=name,executable=full,source=source,companion_capable=capable});
   } catch {}
  }
 
