@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Web.Script.Serialization;
+using System.Collections.Generic;
 
 static class M1BrowserBrokerTests {
  static int passed;
