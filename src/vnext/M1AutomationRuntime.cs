@@ -32,21 +32,26 @@ public sealed class M1AutomationRuntime : IDisposable {
  readonly AutomationStateStore automation;
  readonly M1SessionBindingStore bindings;
  readonly M1BrowserProfileManager browser;
+ readonly int[] brokerPorts;
  readonly object gate=new object();
  M1BrowserBroker broker;
  bool started;
  int recovered;
 
  public M1AutomationRuntime(string rootPath)
-  : this(rootPath,null,null) {}
+  : this(rootPath,null,null,null) {}
 
- public M1AutomationRuntime(string rootPath,string browserExecutable,string companionExtensionRoot) {
+ public M1AutomationRuntime(string rootPath,string browserExecutable,string companionExtensionRoot)
+  : this(rootPath,browserExecutable,companionExtensionRoot,null) {}
+
+ public M1AutomationRuntime(string rootPath,string browserExecutable,string companionExtensionRoot,int[] ports) {
   if(String.IsNullOrWhiteSpace(rootPath))throw new ArgumentException("rootPath");
   root=Path.GetFullPath(rootPath);
   Directory.CreateDirectory(root);
   automation=new AutomationStateStore(Path.Combine(root,"automation"));
   bindings=new M1SessionBindingStore(Path.Combine(root,"automation"));
   browser=new M1BrowserProfileManager(root,browserExecutable,companionExtensionRoot);
+  brokerPorts=ports==null?null:(int[])ports.Clone();
  }
 
  public AutomationStateStore Automation { get { return automation; } }
@@ -56,7 +61,7 @@ public sealed class M1AutomationRuntime : IDisposable {
  public M1RuntimeStatus Start() {
   lock(gate) {
    if(!started) {
-    broker=new M1BrowserBroker(automation,0);
+    broker=brokerPorts==null?new M1BrowserBroker(automation):new M1BrowserBroker(automation,brokerPorts);
     broker.Start();
     recovered=broker.RepublishRecoverable();
     started=true;
@@ -110,25 +115,20 @@ public sealed class M1AutomationRuntime : IDisposable {
     throw new InvalidOperationException("active_run_binding_conflict");
   }
 
-  var queued=automation.QueueHandoff(
-   run.run_id,run.generation,summary,nextAction,verification,blockingState);
+  return QueueForRun(run,summary,nextAction,verification,blockingState,binding.binding_id,binding.state);
+ }
 
-  if(!queued.blocked && !String.IsNullOrEmpty(queued.message_id))
-   broker.Publish(run.run_id,run.generation,queued.message_id);
+ public M1RuntimeHandoffResult HandoffByRun(
+  string runId,long generation,string summary,string nextAction,string verification,string blockingState) {
+  EnsureStarted();
+  var run=automation.GetRun(runId);
+  if(run.generation!=generation)throw new InvalidOperationException("stale_generation");
+  return QueueForRun(run,summary,nextAction,verification,blockingState,"","");
+ }
 
-  return new M1RuntimeHandoffResult {
-   state=queued.blocked?"BLOCKED":"HANDOFF_QUEUED",
-   binding_id=binding.binding_id,
-   binding_state=binding.state,
-   run_id=queued.run_id,
-   generation=queued.generation,
-   seq=queued.seq,
-   message_id=queued.message_id,
-   handoff_state=queued.state,
-   existing=queued.existing,
-   blocked=queued.blocked,
-   blocking_state=queued.blocking_state
-  };
+ public AutomationRun Run(string runId) {
+  EnsureStarted();
+  return automation.GetRun(runId);
  }
 
  public AutomationCompleteResult Complete(string openAiSession,string verification) {
@@ -137,6 +137,11 @@ public sealed class M1AutomationRuntime : IDisposable {
   var run=automation.GetActiveRunByClientSession(sessionKey);
   if(run==null)throw new InvalidOperationException("active_automation_run_not_found");
   return automation.Complete(run.run_id,run.generation,verification);
+ }
+
+ public AutomationCompleteResult CompleteByRun(string runId,long generation,string verification) {
+  EnsureStarted();
+  return automation.Complete(runId,generation,verification);
  }
 
  public AutomationRun ActiveRun(string openAiSession) {
@@ -159,6 +164,30 @@ public sealed class M1AutomationRuntime : IDisposable {
    if(broker!=null){broker.Dispose();broker=null;}
    started=false;
   }
+ }
+
+ M1RuntimeHandoffResult QueueForRun(
+  AutomationRun run,string summary,string nextAction,string verification,string blockingState,
+  string bindingId,string bindingState) {
+  var queued=automation.QueueHandoff(
+   run.run_id,run.generation,summary,nextAction,verification,blockingState);
+
+  if(!queued.blocked && !String.IsNullOrEmpty(queued.message_id))
+   broker.Publish(run.run_id,run.generation,queued.message_id);
+
+  return new M1RuntimeHandoffResult {
+   state=queued.blocked?"BLOCKED":"HANDOFF_QUEUED",
+   binding_id=bindingId??"",
+   binding_state=bindingState??"",
+   run_id=queued.run_id,
+   generation=queued.generation,
+   seq=queued.seq,
+   message_id=queued.message_id,
+   handoff_state=queued.state,
+   existing=queued.existing,
+   blocked=queued.blocked,
+   blocking_state=queued.blocking_state
+  };
  }
 
  void EnsureStarted() {
