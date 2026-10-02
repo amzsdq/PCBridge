@@ -2,6 +2,41 @@
 
 This document records what PCBridge should learn from existing systems. References are architectural evidence, not authority to copy blindly.
 
+## Chat On Steroids (totec448-spec/chat-on-steroids)
+
+Reviewed against release `v2.1.25` and main commit `a1879601684712cbc3d6100ee4fe2dacbdf1b7b4`.
+
+Decision: **strong selective adoption, not whole-product import**.
+
+High-value mechanisms:
+- durable input/outbox ownership
+- ambiguous-send fencing
+- exact conversation/document/turn identity
+- composer lease and safe pre-Send remount repair
+- causal response-turn ownership
+- browser command custody and durable receipts
+- explicit source -> test -> package -> installed -> live evidence levels
+- optional loopback control API security patterns
+
+Do not import for M1:
+- Electron shell
+- local file/terminal/MCP implementation that duplicates Desktop Commander
+- OpenRouter/second-model Goal engine
+- worker/swarm orchestration
+- full Compact & Resume
+- user-normal-browser coupling as the primary PCBridge provider
+
+PCBridge-specific improvement:
+- run ChatGPT automation in a dedicated PCBridge browser profile so the user can game, watch video, type and browse without the automation touching their foreground browser/session.
+
+Important incident references:
+- #744 / PR #752: safe recovery from a composer remount before Send
+- #746: continuation lifecycle/ownership analysis
+- PR #755: stale earlier final must not close a newly started response turn
+
+Reference: https://github.com/totec448-spec/chat-on-steroids
+Detailed review: `research/COS_PARROT_M1_REVIEW_2026-10-02.md`
+
 ## Parrot (amzsdq/parrot)
 
 Useful, partial adoption.
