@@ -326,17 +326,21 @@ public sealed class M1BrowserBroker : IDisposable {
     state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"PRE_SEND_RETRY",ev.error,0);
     Retire(rec);publishNext=true;
    } else if(ev.kind=="provider_rate_limited") {
-    if(PostDispatchOrResponse(h.state))
+    if(PostDispatchOrResponse(h.state)) {
      state.FailTerminal(run.run_id,run.generation,h.message_id,"rate limit observed after provider dispatch/receipt; automatic user-message resend is fenced");
-    else
+    } else {
      state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"RATE_LIMITED",ev.error,ev.retry_after_seconds);
-    Retire(rec);publishNext=true;
+     publishNext=true;
+    }
+    Retire(rec);
    } else if(ev.kind=="provider_load_failed" || ev.kind=="provider_offline") {
-    if(PostDispatchOrResponse(h.state))
+    if(PostDispatchOrResponse(h.state)) {
      state.FailTerminal(run.run_id,run.generation,h.message_id,"provider load failed after provider dispatch/receipt; automatic user-message resend is fenced");
-    else
+    } else {
      state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"LOAD_RECOVERY",ev.error,ev.retry_after_seconds);
-    Retire(rec);publishNext=true;
+     publishNext=true;
+    }
+    Retire(rec);
    } else if(ev.kind=="provider_auth_required") {
     if(PostDispatchOrResponse(h.state))
      state.FailTerminal(run.run_id,run.generation,h.message_id,"authentication required after provider dispatch/receipt; response ownership requires human reconciliation");
@@ -386,11 +390,12 @@ public sealed class M1BrowserBroker : IDisposable {
     Retire(rec);
    } else throw new InvalidOperationException("event_kind_invalid");
 
+   // Event ACK is a synchronization boundary. If this transition creates a
+   // successor broker command, publish it before returning 200 so the browser
+   // cannot observe an acknowledged transition with an empty command queue.
+   if(publishNext)Publish(run.run_id,run.generation,h.message_id);
    AddEvent(ev);
    Write(stream,200,new{ok=true},req.origin);
-   if(publishNext) {
-    try { Publish(run.run_id,run.generation,h.message_id); } catch {}
-   }
   } catch(Exception e) { WriteError(stream,409,e.Message,req.origin); }
  }
 
