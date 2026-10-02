@@ -30,6 +30,47 @@
     return sendRuntime(eventFor(command,kind,extra));
   }
 
+  function issueEvent(issue) {
+    if (!issue) return null;
+    if (issue.kind==='rate_limited') return 'provider_rate_limited';
+    if (issue.kind==='auth') return 'provider_auth_required';
+    if (issue.kind==='offline') return 'provider_offline';
+    if (issue.kind==='load_failed') return 'provider_load_failed';
+    return null;
+  }
+
+  async function reportIssue(command,issue) {
+    const kind=issueEvent(issue);
+    if (!kind) return false;
+    await post(command,kind,{
+      error:issue.error || issue.kind || 'provider_issue',
+      retry_after_seconds:issue.retry_after_seconds || 0
+    });
+    return true;
+  }
+
+  function waitUntil(read,timeoutMs) {
+    return new Promise(resolve => {
+      let done=false;
+      const finish=value => {
+        if (done) return;
+        done=true;
+        observer.disconnect();
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const check=() => {
+        let value=null;
+        try { value=read(); } catch {}
+        if (value) finish(value);
+      };
+      const observer=new MutationObserver(check);
+      observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});
+      const timer=setTimeout(()=>finish(null),timeoutMs);
+      check();
+    });
+  }
+
   function startResponseMonitor(command,mode) {
     if (!command || monitors.has(command.id) || DOM.conversationId()!==command.conversation_id) return false;
 
@@ -59,6 +100,11 @@
 
     const runCheck=async() => {
       if (DOM.conversationId()!==command.conversation_id) { stop(); return; }
+      const issue=DOM.providerIssue();
+      if (issue) {
+        await reportIssue(command,issue);
+        stop();return;
+      }
 
       if (mode==='gate') {
         let snapshot=sourceUser
@@ -206,9 +252,16 @@
     inFlight.add(command.id);
     let prepared=null;
     try {
+      const beforeIssue=DOM.providerIssue();
+      if (beforeIssue) {
+        await reportIssue(command,beforeIssue);
+        return;
+      }
       prepared=await DOM.prepareSend(command);
       if (!prepared.ok) {
-        await post(command,'pre_send_failed',{error:prepared.error || 'prepare_failed'});
+        const issue=DOM.providerIssue();
+        if (issue) await reportIssue(command,issue);
+        else await post(command,'pre_send_failed',{error:prepared.error || 'prepare_failed'});
         return;
       }
 
@@ -240,6 +293,63 @@
     }
   }
 
+
+  async function handleRecover(command) {
+    if (!command || typeof command.id!=='string' || inFlight.has(command.id)) return;
+    if (DOM.conversationId()!==command.conversation_id) return;
+    inFlight.add(command.id);
+    try {
+      const state=await waitUntil(() => {
+        const issue=DOM.providerIssue();
+        if (issue) return {issue};
+        if (DOM.composerVisible() && DOM.composerWritable()) return {ready:true};
+        return null;
+      },15000);
+      if (state?.issue) {
+        await reportIssue(command,state.issue);
+        return;
+      }
+      if (!state?.ready) {
+        await post(command,'provider_load_failed',{error:'target_not_ready_after_reload'});
+        return;
+      }
+      await post(command,'target_recovered');
+    } finally {
+      inFlight.delete(command.id);
+    }
+  }
+
+  async function handleReconcile(command) {
+    if (!command || typeof command.id!=='string' || inFlight.has(command.id)) return;
+    if (DOM.conversationId()!==command.conversation_id) return;
+    inFlight.add(command.id);
+    try {
+      const result=await waitUntil(() => {
+        const issue=DOM.providerIssue();
+        if (issue) return {status:'issue',issue};
+        const receipt=DOM.reconcileReceipt(command.text);
+        if (receipt?.status==='found' || receipt?.status==='conflict') return receipt;
+        return null;
+      },10000);
+
+      if (result?.status==='found') {
+        await post(command,'ambiguous_delivered',{user_message_id:result.user_message_id});
+        return;
+      }
+      if (result?.status==='issue') {
+        await post(command,'ambiguous_unresolved',{
+          error:'provider_issue_during_reconcile: '+(result.issue?.error || result.issue?.kind || 'unknown')
+        });
+        return;
+      }
+      await post(command,'ambiguous_unresolved',{
+        error:result?.status==='conflict'?'multiple_exact_receipts':'exact_receipt_not_observed_after_reload'
+      });
+    } finally {
+      inFlight.delete(command.id);
+    }
+  }
+
   chrome.runtime.onMessage.addListener((message,sender,sendResponse) => {
     const command=message?.command;
     if (!command || DOM.conversationId()!==command.conversation_id) {
@@ -261,6 +371,16 @@
     if (message.type==='pcbridge.m1.observe') {
       const accepted=startResponseMonitor(command,'observe');
       sendResponse({accepted,document_epoch:documentEpoch});
+      return true;
+    }
+    if (message.type==='pcbridge.m1.recover') {
+      void handleRecover(command);
+      sendResponse({accepted:true,document_epoch:documentEpoch});
+      return true;
+    }
+    if (message.type==='pcbridge.m1.reconcile') {
+      void handleReconcile(command);
+      sendResponse({accepted:true,document_epoch:documentEpoch});
       return true;
     }
   });
