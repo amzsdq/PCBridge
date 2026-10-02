@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Diagnostics;
 
 public sealed class M1RuntimeStatus {
  public bool started;
@@ -10,6 +11,7 @@ public sealed class M1RuntimeStatus {
  public int pending_bindings;
  public bool browser_runtime_available;
  public bool companion_ready;
+ public bool provider_running;
  public string state_root="";
 }
 
@@ -25,6 +27,8 @@ public sealed class M1RuntimeHandoffResult {
  public bool existing;
  public bool blocked;
  public string blocking_state="";
+ public string provider_state="";
+ public string provider_error="";
 }
 
 public sealed class M1AutomationRuntime : IDisposable {
@@ -35,6 +39,7 @@ public sealed class M1AutomationRuntime : IDisposable {
  readonly int[] brokerPorts;
  readonly object gate=new object();
  M1BrowserBroker broker;
+ Process providerProcess;
  bool started;
  int recovered;
 
@@ -162,6 +167,7 @@ public sealed class M1AutomationRuntime : IDisposable {
  public void Dispose() {
   lock(gate) {
    if(broker!=null){broker.Dispose();broker=null;}
+   if(providerProcess!=null){try{providerProcess.Dispose();}catch{}providerProcess=null;}
    started=false;
   }
  }
@@ -172,8 +178,18 @@ public sealed class M1AutomationRuntime : IDisposable {
   var queued=automation.QueueHandoff(
    run.run_id,run.generation,summary,nextAction,verification,blockingState);
 
-  if(!queued.blocked && !String.IsNullOrEmpty(queued.message_id))
+  string providerState=queued.blocked?"not_needed":"pending";
+  string providerError="";
+  if(!queued.blocked && !String.IsNullOrEmpty(queued.message_id)) {
    broker.Publish(run.run_id,run.generation,queued.message_id);
+   try {
+    EnsureProviderRunning(run.target.conversation_id);
+    providerState="running";
+   } catch(Exception e) {
+    providerState="blocked";
+    providerError=e.Message;
+   }
+  }
 
   return new M1RuntimeHandoffResult {
    state=queued.blocked?"BLOCKED":"HANDOFF_QUEUED",
@@ -186,14 +202,36 @@ public sealed class M1AutomationRuntime : IDisposable {
    handoff_state=queued.state,
    existing=queued.existing,
    blocked=queued.blocked,
-   blocking_state=queued.blocking_state
+   blocking_state=queued.blocking_state,
+   provider_state=providerState,
+   provider_error=providerError
   };
+ }
+
+ void EnsureProviderRunning(string conversationId) {
+  if(String.IsNullOrWhiteSpace(conversationId))throw new InvalidOperationException("provider_conversation_missing");
+  lock(gate) {
+   if(providerProcess!=null) {
+    try { if(!providerProcess.HasExited)return; } catch {}
+    try { providerProcess.Dispose(); } catch {}
+    providerProcess=null;
+   }
+   var plan=browser.Plan("https://chatgpt.com/c/"+conversationId);
+   var startedProcess=Process.Start(browser.StartInfo(plan));
+   if(startedProcess==null)throw new InvalidOperationException("browser_provider_start_failed");
+   providerProcess=startedProcess;
+  }
  }
 
  void EnsureStarted() {
   lock(gate) {
    if(!started)Start();
   }
+ }
+
+ bool ProviderAliveUnsafe() {
+  if(providerProcess==null)return false;
+  try{return !providerProcess.HasExited;}catch{return false;}
  }
 
  M1RuntimeStatus StatusUnsafe() {
@@ -209,6 +247,7 @@ public sealed class M1AutomationRuntime : IDisposable {
    pending_bindings=bindings.Pending().Length,
    browser_runtime_available=runtime,
    companion_ready=companion,
+   provider_running=ProviderAliveUnsafe(),
    state_root=root
   };
  }
