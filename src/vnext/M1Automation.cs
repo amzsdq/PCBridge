@@ -29,6 +29,10 @@ public sealed class AutomationHandoff {
  public string send_authorized_utc="";
  public string dispatched_utc="";
  public string receipt_utc="";
+ public string provider_user_message_id="";
+ public string provider_document_epoch="";
+ public string source_user_message_id="";
+ public string source_response_turn_id="";
  public string response_turn_id="";
  public string terminal_utc="";
  public int attempt;
@@ -223,6 +227,147 @@ public sealed class AutomationStateStore {
   });
  }
 
+ public AutomationHandoff BindSourceTurn(
+  string runId,long generation,string messageId,string sourceUserMessageId,string sourceResponseTurnId,string documentEpoch) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(h.state!="HANDOFF_COMMITTED" && h.state!="WAIT_CURRENT_TURN_END")
+    throw new InvalidOperationException("source_turn_bind_wrong_state");
+   string user=ProviderId(sourceUserMessageId,"source_user_message_id");
+   string turn=ProviderId(sourceResponseTurnId,"source_response_turn_id");
+   string epoch=ProviderId(documentEpoch,"provider_document_epoch");
+   if(h.source_user_message_id.Length>0 && h.source_user_message_id!=user)
+    throw new InvalidOperationException("source_user_message_conflict");
+   if(h.source_response_turn_id.Length>0 && h.source_response_turn_id!=turn)
+    throw new InvalidOperationException("source_response_turn_conflict");
+   h.source_user_message_id=user;
+   h.source_response_turn_id=turn;
+   h.provider_document_epoch=epoch;
+   if(h.state=="HANDOFF_COMMITTED")h.state="WAIT_CURRENT_TURN_END";
+   h.updated_utc=Utc();
+   run.status="HANDOFF_PENDING";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff ConfirmProviderReceipt(
+  string runId,long generation,string messageId,string providerUserMessageId,string documentEpoch) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(h.state!="SEND_DISPATCHED" && h.state!="USER_RECEIPT_CONFIRMED")
+    throw new InvalidOperationException("provider_receipt_wrong_state");
+   string user=ProviderId(providerUserMessageId,"provider_user_message_id");
+   string epoch=ProviderId(documentEpoch,"provider_document_epoch");
+   if(h.provider_user_message_id.Length>0 && h.provider_user_message_id!=user)
+    throw new InvalidOperationException("provider_user_message_conflict");
+   h.provider_user_message_id=user;
+   h.provider_document_epoch=epoch;
+   if(h.state=="SEND_DISPATCHED") {
+    h.state="USER_RECEIPT_CONFIRMED";
+    h.receipt_utc=Utc();
+   }
+   h.updated_utc=Utc();
+   run.status="TURN_RUNNING";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff BindResponseTurn(
+  string runId,long generation,string messageId,string providerUserMessageId,string responseTurnId,string documentEpoch) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   string user=ProviderId(providerUserMessageId,"provider_user_message_id");
+   string turn=ProviderId(responseTurnId,"response_turn_id");
+   string epoch=ProviderId(documentEpoch,"provider_document_epoch");
+   if(h.provider_user_message_id.Length==0 || h.provider_user_message_id!=user)
+    throw new InvalidOperationException("response_question_not_owned");
+   if(h.provider_document_epoch.Length>0 && h.provider_document_epoch!=epoch)
+    throw new InvalidOperationException("response_document_epoch_mismatch");
+   if(h.response_turn_id.Length>0 && h.response_turn_id!=turn)
+    throw new InvalidOperationException("response_turn_conflict");
+   if(h.state=="USER_RECEIPT_CONFIRMED")h.state="RESPONSE_BINDING";
+   if(h.state!="RESPONSE_BINDING" && h.state!="TURN_RUNNING" && h.state!="TERMINAL_OBSERVED")
+    throw new InvalidOperationException("response_turn_bind_wrong_state");
+   h.response_turn_id=turn;
+   h.provider_document_epoch=epoch;
+   if(h.state=="RESPONSE_BINDING")h.state="TURN_RUNNING";
+   h.updated_utc=Utc();
+   run.status="TURN_RUNNING";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff MarkSourceTerminal(
+  string runId,long generation,string messageId,string sourceUserMessageId,string sourceResponseTurnId,string documentEpoch) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(h.state!="WAIT_CURRENT_TURN_END")throw new InvalidOperationException("source_terminal_wrong_state");
+   if(h.source_user_message_id!=ProviderId(sourceUserMessageId,"source_user_message_id") ||
+      h.source_response_turn_id!=ProviderId(sourceResponseTurnId,"source_response_turn_id"))
+    throw new InvalidOperationException("source_terminal_identity_mismatch");
+   if(h.provider_document_epoch!=ProviderId(documentEpoch,"provider_document_epoch"))
+    throw new InvalidOperationException("source_terminal_epoch_mismatch");
+   h.state="TARGET_READY";
+   h.updated_utc=Utc();
+   run.status="HANDOFF_PENDING";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff MarkResponseEvidence(
+  string runId,long generation,string messageId,string responseTurnId,string documentEpoch,string evidenceState,string errorClass) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   string turn=ProviderId(responseTurnId,"response_turn_id");
+   string epoch=ProviderId(documentEpoch,"provider_document_epoch");
+   if(h.response_turn_id.Length==0 || h.response_turn_id!=turn)
+    throw new InvalidOperationException("response_evidence_turn_mismatch");
+   if(h.provider_document_epoch.Length>0 && h.provider_document_epoch!=epoch)
+    throw new InvalidOperationException("response_evidence_epoch_mismatch");
+   string target=(evidenceState??"").Trim().ToUpperInvariant();
+   if(target=="TURN_RUNNING") {
+    if(h.state=="TERMINAL_OBSERVED")h.state="TURN_RUNNING";
+    else if(h.state!="TURN_RUNNING")throw new InvalidOperationException("response_running_wrong_state");
+   } else if(target=="TERMINAL_OBSERVED") {
+    if(h.state!="TURN_RUNNING")throw new InvalidOperationException("terminal_observed_wrong_state");
+    h.state="TERMINAL_OBSERVED";
+   } else if(target=="TERMINAL_CONFIRMED") {
+    if(h.state!="TERMINAL_OBSERVED")throw new InvalidOperationException("terminal_confirmed_wrong_state");
+    h.state="TERMINAL_CONFIRMED";
+    h.terminal_utc=Utc();
+   } else throw new ArgumentException("evidence_state invalid");
+   if(!String.IsNullOrWhiteSpace(errorClass))h.error_class=errorClass.Trim();
+   h.updated_utc=Utc();
+   run.status=RunStatusForHandoff(h.state);
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
  public AutomationHandoff Advance(
   string runId,long generation,string messageId,string nextState,string responseTurnId,string errorClass) {
   return Locked<AutomationHandoff>(delegate {
@@ -349,6 +494,12 @@ public sealed class AutomationStateStore {
 
  static void RequireGeneration(AutomationRun run,long generation) {
   if(run.generation!=generation)throw new InvalidOperationException("stale_generation");
+ }
+
+ static string ProviderId(string value,string name) {
+  string v=(value??"").Trim();
+  if(v.Length<1 || v.Length>200 || v.Any(Char.IsControl))throw new ArgumentException(name+" invalid");
+  return v;
  }
 
  static string Required(string value,string name,int max) {
