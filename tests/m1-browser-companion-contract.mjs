@@ -36,6 +36,8 @@ assert(/\/v1\/authorize/.test(bgSource),'pre-Send authorization barrier required
 assert(/status:'ambiguous'/.test(domSource),'ambiguous delivery state required');
 assert(typeof DOM.responseSnapshot==='function','exact response ownership snapshot required');
 assert(typeof DOM.latestUserResponseSnapshot==='function','source-turn ownership snapshot required');
+assert(typeof DOM.providerIssue==='function','provider issue classifier required');
+assert(typeof DOM.reconcileReceipt==='function','ambiguous receipt reconciliation required');
 assert(/draft\.rebind/.test(domSource),'pre-Send composer remount recovery required');
 assert(/button\.click\(\)/.test(domSource),'native Send control required');
 assert(!/KeyboardEvent/.test(domSource),'keyboard-event Send fallback forbidden');
@@ -44,8 +46,14 @@ const contentSource=fs.readFileSync('provider/chatgpt-extension/content.js','utf
 assert(/source_bound/.test(contentSource) && /source_terminal/.test(contentSource),'source-turn gate events required');
 assert(/response_started/.test(contentSource) && /terminal_observed/.test(contentSource) && /terminal_confirmed/.test(contentSource),'response ownership lifecycle required');
 assert(/TERMINAL_SETTLE_MS/.test(contentSource),'terminal settle window required');
+assert(/provider_rate_limited/.test(contentSource) && /provider_auth_required/.test(contentSource) && /provider_load_failed/.test(contentSource),'provider recovery classifications required');
+assert(/ambiguous_delivered/.test(contentSource) && /ambiguous_unresolved/.test(contentSource),'ambiguous reconciliation outcomes required');
 assert(/MutationObserver/.test(contentSource),'response evidence must be mutation-driven');
 assert(/gate_current_turn/.test(bgSource) && /send_handoff/.test(bgSource) && /observe_response/.test(bgSource),'staged browser routing required');
+assert(/recover_target/.test(bgSource) && /reconcile_ambiguous/.test(bgSource),'recovery and ambiguity command routing required');
+assert(/chrome\.tabs\.reload/.test(bgSource),'exact-target recovery must use background tab reload');
+assert(/ambiguous_unresolved/.test(bgSource),'unresolved ambiguous delivery must fail closed');
+assert(!/reconcile_ambiguous[\s\S]{0,2000}pcbridge\.m1\.send/.test(bgSource),'ambiguity reconciliation must not reuse native Send');
 assert(/active:false/.test(bgSource),'provider tab must never be activated by normal delivery');
 assert(!/chrome\.windows\.update\([^\n]*focused\s*:\s*true/.test(bgSource),'foreground focus activation forbidden');
 
