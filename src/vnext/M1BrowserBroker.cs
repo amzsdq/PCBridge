@@ -7,6 +7,7 @@ using System.Threading;
 using System.Collections.Generic;
 using System.Web.Script.Serialization;
 using System.Security.Cryptography;
+using System.Globalization;
 
 public sealed class M1BrowserCommand {
  public string id="";
@@ -20,6 +21,8 @@ public sealed class M1BrowserCommand {
  public string text="";
  public string user_message_id="";
  public string response_turn_id="";
+ public string not_before_utc="";
+ public int recovery_attempt;
 }
 
 public sealed class M1BrowserEvent {
@@ -31,6 +34,7 @@ public sealed class M1BrowserEvent {
  public string user_message_id="";
  public string response_turn_id="";
  public string error="";
+ public int retry_after_seconds;
  public bool rebound;
 }
 
@@ -95,6 +99,8 @@ public sealed class M1BrowserBroker : IDisposable {
     if(handoff==null)continue;
     if(handoff.state=="HANDOFF_COMMITTED" || handoff.state=="WAIT_CURRENT_TURN_END" ||
        handoff.state=="TARGET_READY" || handoff.state=="COMPOSER_CLAIMED" ||
+       handoff.state=="PRE_SEND_RETRY" || handoff.state=="RATE_LIMITED" ||
+       handoff.state=="LOAD_RECOVERY" || handoff.state=="AMBIGUOUS" ||
        handoff.state=="USER_RECEIPT_CONFIRMED" || handoff.state=="RESPONSE_BINDING" ||
        handoff.state=="TURN_RUNNING" || handoff.state=="TERMINAL_OBSERVED") {
      try { Publish(run.run_id,run.generation,handoff.message_id);count++; } catch {}
@@ -154,6 +160,10 @@ public sealed class M1BrowserBroker : IDisposable {
    kind="gate_current_turn";suffix="gate";
   } else if(h.state=="TARGET_READY" || h.state=="COMPOSER_CLAIMED") {
    kind="send_handoff";suffix="send";
+  } else if(h.state=="PRE_SEND_RETRY" || h.state=="RATE_LIMITED" || h.state=="LOAD_RECOVERY") {
+   kind="recover_target";suffix="recover";
+  } else if(h.state=="AMBIGUOUS") {
+   kind="reconcile_ambiguous";suffix="reconcile";
   } else if(h.state=="USER_RECEIPT_CONFIRMED" || h.state=="RESPONSE_BINDING" ||
             h.state=="TURN_RUNNING" || h.state=="TERMINAL_OBSERVED") {
    if(String.IsNullOrWhiteSpace(h.provider_user_message_id))
@@ -169,9 +179,11 @@ public sealed class M1BrowserBroker : IDisposable {
    seq=h.seq,
    conversation_id=run.target.conversation_id,
    payload_hash=h.payload_hash,
-   text=kind=="send_handoff"?h.payload:"",
+   text=(kind=="send_handoff"||kind=="reconcile_ambiguous")?h.payload:"",
    user_message_id=kind=="gate_current_turn"?h.source_user_message_id:h.provider_user_message_id,
-   response_turn_id=kind=="gate_current_turn"?h.source_response_turn_id:h.response_turn_id
+   response_turn_id=kind=="gate_current_turn"?h.source_response_turn_id:h.response_turn_id,
+   not_before_utc=h.next_attempt_utc,
+   recovery_attempt=h.recovery_attempt
   };
  }
 
@@ -233,6 +245,7 @@ public sealed class M1BrowserBroker : IDisposable {
     var rec=pair.Value;
     if(rec.retired || rec.authorized)continue;
     if(rec.leaseUntilUtc>now)continue;
+    if(!CommandDue(rec.command,now))continue;
     rec.leaseUntilUtc=now.AddSeconds(20);
     return rec.command;
    }
@@ -277,7 +290,7 @@ public sealed class M1BrowserBroker : IDisposable {
    command_id=Get(obj,"command_id"),kind=Get(obj,"kind"),conversation_id=Get(obj,"conversation_id"),
    document_epoch=Get(obj,"document_epoch"),payload_hash=Get(obj,"payload_hash"),
    user_message_id=Get(obj,"user_message_id"),response_turn_id=Get(obj,"response_turn_id"),
-   error=Get(obj,"error"),rebound=GetBool(obj,"rebound")
+   error=Get(obj,"error"),retry_after_seconds=GetInt(obj,"retry_after_seconds",0,0,21600),rebound=GetBool(obj,"rebound")
   };
   if(ev.kind=="page_presence") { AddEvent(ev);Write(stream,200,new{ok=true},req.origin);return; }
 
@@ -310,9 +323,30 @@ public sealed class M1BrowserBroker : IDisposable {
     if(h.state=="TARGET_READY")state.Advance(run.run_id,run.generation,h.message_id,"COMPOSER_CLAIMED","","");
    } else if(ev.kind=="pre_send_failed") {
     if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
-    if(h.state=="TARGET_READY"||h.state=="COMPOSER_CLAIMED")
-     state.Advance(run.run_id,run.generation,h.message_id,"PRE_SEND_RETRY","",ev.error);
+    state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"PRE_SEND_RETRY",ev.error,0);
+    Retire(rec);publishNext=true;
+   } else if(ev.kind=="provider_rate_limited") {
+    if(h.state=="SEND_DISPATCHED"||h.state=="AMBIGUOUS")
+     state.FailTerminal(run.run_id,run.generation,h.message_id,"rate limit observed after possible dispatch; delivery must be reconciled manually");
+    else
+     state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"RATE_LIMITED",ev.error,ev.retry_after_seconds);
+    Retire(rec);publishNext=true;
+   } else if(ev.kind=="provider_load_failed" || ev.kind=="provider_offline") {
+    if(h.state=="SEND_DISPATCHED"||h.state=="AMBIGUOUS")
+     state.FailTerminal(run.run_id,run.generation,h.message_id,"provider load failed while delivery was uncertain");
+    else
+     state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"LOAD_RECOVERY",ev.error,ev.retry_after_seconds);
+    Retire(rec);publishNext=true;
+   } else if(ev.kind=="provider_auth_required") {
+    if(h.state=="SEND_DISPATCHED"||h.state=="AMBIGUOUS")
+     state.FailTerminal(run.run_id,run.generation,h.message_id,"authentication required while delivery was uncertain");
+    else
+     state.BlockAuth(run.run_id,run.generation,h.message_id,ev.error);
     Retire(rec);
+   } else if(ev.kind=="target_recovered") {
+    if(rec.command.kind!="recover_target")throw new InvalidOperationException("recovery_event_wrong_command");
+    state.ActivateRecovery(run.run_id,run.generation,h.message_id,ev.document_epoch);
+    Retire(rec);publishNext=true;
    } else if(ev.kind=="delivered") {
     if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
     if(h.state!="SEND_DISPATCHED")throw new InvalidOperationException("delivery_without_dispatch_intent");
@@ -322,6 +356,16 @@ public sealed class M1BrowserBroker : IDisposable {
     if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
     if(h.state!="SEND_DISPATCHED")throw new InvalidOperationException("ambiguity_without_dispatch_intent");
     state.Advance(run.run_id,run.generation,h.message_id,"AMBIGUOUS","",ev.error);
+    Retire(rec);publishNext=true;
+   } else if(ev.kind=="ambiguous_delivered") {
+    if(rec.command.kind!="reconcile_ambiguous")throw new InvalidOperationException("reconcile_event_wrong_command");
+    if(h.state!="AMBIGUOUS")throw new InvalidOperationException("reconcile_without_ambiguity");
+    state.ConfirmProviderReceipt(run.run_id,run.generation,h.message_id,ev.user_message_id,ev.document_epoch);
+    Retire(rec);publishNext=true;
+   } else if(ev.kind=="ambiguous_unresolved") {
+    if(rec.command.kind!="reconcile_ambiguous")throw new InvalidOperationException("reconcile_event_wrong_command");
+    if(h.state!="AMBIGUOUS")throw new InvalidOperationException("reconcile_without_ambiguity");
+    state.FailTerminal(run.run_id,run.generation,h.message_id,"ambiguous delivery unresolved after exact-target reload: "+ev.error);
     Retire(rec);
    } else if(ev.kind=="response_started") {
     if(rec.command.kind!="observe_response")throw new InvalidOperationException("response_event_wrong_command");
@@ -372,6 +416,14 @@ public sealed class M1BrowserBroker : IDisposable {
 
  bool ValidHost(string host) {
   return String.Equals(host,"127.0.0.1:"+port,StringComparison.OrdinalIgnoreCase);
+ }
+
+ static bool CommandDue(M1BrowserCommand command,DateTime nowUtc) {
+  if(command==null||String.IsNullOrWhiteSpace(command.not_before_utc))return true;
+  DateTime due;
+  if(!DateTime.TryParse(command.not_before_utc,CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind,out due))
+   return false;
+  return nowUtc>=due.ToUniversalTime();
  }
 
  static bool ValidExtensionOrigin(string origin) {
@@ -455,6 +507,11 @@ public sealed class M1BrowserBroker : IDisposable {
   if(obj==null)throw new InvalidDataException("json_object_required");return obj;
  }
  static string Get(IDictionary<string,object> obj,string key) { object v;return obj.TryGetValue(key,out v)&&v!=null?Convert.ToString(v):""; }
+ static int GetInt(IDictionary<string,object> obj,string key,int fallback,int low,int high) {
+  object value;int parsed;
+  if(!obj.TryGetValue(key,out value)||value==null||!Int32.TryParse(Convert.ToString(value),out parsed))return fallback;
+  return Math.Max(low,Math.Min(high,parsed));
+ }
  static bool GetBool(IDictionary<string,object> obj,string key) { object v;return obj.TryGetValue(key,out v)&&v!=null&&Convert.ToBoolean(v); }
  static int QueryInt(string query,string key,int fallback,int low,int high) {
   foreach(string part in (query??"").Split('&')) {
