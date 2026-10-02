@@ -43,6 +43,7 @@ public sealed class AutomationHandoff {
 
 public sealed class AutomationRun {
  public string run_id="";
+ public string client_session_key="";
  public AutomationTarget target=new AutomationTarget();
  public long generation=1;
  public int seq;
@@ -97,11 +98,31 @@ public sealed class AutomationStateStore {
  public string StatePath { get { return path; } }
 
  public AutomationRun CreateRun(AutomationTarget target) {
+  return CreateRun(target,"");
+ }
+
+ public AutomationRun CreateRun(AutomationTarget target,string clientSessionKey) {
   return Locked<AutomationRun>(delegate {
    ValidateTarget(target);
+   string session=NormalizeSessionKey(clientSessionKey);
    var state=LoadUnsafe();
+   if(session.Length>0) {
+    var existing=state.runs.Find(delegate(AutomationRun candidate) {
+     return candidate.client_session_key==session && candidate.status!="COMPLETED" &&
+      candidate.status!="CANCELLED" && candidate.status!="FAILED_TERMINAL";
+    });
+    if(existing!=null) {
+     if(existing.target==null ||
+        !String.Equals(existing.target.provider,target.provider,StringComparison.OrdinalIgnoreCase) ||
+        existing.target.provider_profile_id!=target.provider_profile_id ||
+        existing.target.conversation_id!=target.conversation_id)
+      throw new InvalidOperationException("client_session_target_conflict");
+     return CloneRun(existing);
+    }
+   }
    var run=new AutomationRun();
    run.run_id=Guid.NewGuid().ToString("N");
+   run.client_session_key=session;
    run.target=CloneTarget(target);
    run.generation=1;
    run.seq=0;
@@ -119,6 +140,21 @@ public sealed class AutomationStateStore {
   return Locked<AutomationRun>(delegate {
    var state=LoadUnsafe();
    return CloneRun(FindRun(state,runId));
+  });
+ }
+
+ public AutomationRun GetActiveRunByClientSession(string clientSessionKey) {
+  return Locked<AutomationRun>(delegate {
+   string session=NormalizeSessionKey(clientSessionKey);
+   if(session.Length==0)throw new ArgumentException("client_session_key required");
+   var state=LoadUnsafe();
+   for(int i=state.runs.Count-1;i>=0;i--) {
+    var run=state.runs[i];
+    if(run.client_session_key!=session)continue;
+    if(run.status=="COMPLETED"||run.status=="CANCELLED"||run.status=="FAILED_TERMINAL")continue;
+    return CloneRun(run);
+   }
+   return null;
   });
  }
 
@@ -535,6 +571,13 @@ public sealed class AutomationStateStore {
 
  static void RequireGeneration(AutomationRun run,long generation) {
   if(run.generation!=generation)throw new InvalidOperationException("stale_generation");
+ }
+
+ static string NormalizeSessionKey(string value) {
+  string v=(value??"").Trim().ToUpperInvariant();
+  if(v.Length==0)return "";
+  if(!Regex.IsMatch(v,@"\A[A-F0-9]{64}\z"))throw new ArgumentException("client_session_key invalid");
+  return v;
  }
 
  static string ProviderId(string value,string name) {
