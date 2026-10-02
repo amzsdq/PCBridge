@@ -36,6 +36,16 @@ static class M1BrowserBrokerTests {
   if(!outer.TryGetValue("command",out raw)||raw==null)return null;
   return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(Json(raw));
  }
+
+ static Dictionary<string,object> CommandForConversation(
+  int port,string origin,string token,string conversationId,int maxReads) {
+  for(int i=0;i<maxReads;i++) {
+   var command=Command(Request(port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
+   if(command==null)return null;
+   if(S(command,"conversation_id")==conversationId)return command;
+  }
+  return null;
+ }
  static string S(IDictionary<string,object> obj,string key){object v;return obj!=null&&obj.TryGetValue(key,out v)&&v!=null?Convert.ToString(v):"";}
  static AutomationTarget Target(string suffix){return new AutomationTarget{provider="chatgpt",provider_profile_id="profile_"+suffix,conversation_id="12345678-abcd-4abc-8abc-"+suffix.PadRight(12,'0').Substring(0,12)};}
  static string Pair(int port,string origin) {
@@ -300,8 +310,8 @@ static class M1BrowserBrokerTests {
    Check(published>=1,"recoverable durable handoff republished after broker restart");
    const string origin="chrome-extension://abcdefghijklmnopabcdefghijklmnop";
    string token=Pair(broker.Port,origin);
-   var cmd=Command(Request(broker.Port,"GET","/v1/command?wait_ms=0",origin,token,null).Item2);
-   Check(S(cmd,"kind")=="gate_current_turn" && S(cmd,"user_message_id")=="src-rec","restart reoffers exact source gate");
+   var cmd=CommandForConversation(broker.Port,origin,token,recover.target.conversation_id,32);
+   Check(S(cmd,"kind")=="gate_current_turn" && S(cmd,"user_message_id")=="src-rec","restart reoffers exact source gate independent of multi-run queue order");
   }
  }
 
