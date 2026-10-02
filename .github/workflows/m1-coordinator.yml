@@ -21,6 +21,8 @@ on:
       - 'src/vnext/M1BrowserBroker.cs'
       - 'provider/chatgpt-extension/**'
       - 'tests/m1-browser-companion-contract.mjs'
+      - 'scripts/package-m1-companion.ps1'
+      - 'scripts/build-m1-local.ps1'
       - '.github/workflows/m1-coordinator.yml'
   pull_request:
     paths:
@@ -42,6 +44,8 @@ on:
       - 'tests/M1BrowserBrokerTests.cs'
       - 'provider/chatgpt-extension/**'
       - 'tests/m1-browser-companion-contract.mjs'
+      - 'scripts/package-m1-companion.ps1'
+      - 'scripts/build-m1-local.ps1'
       - '.github/workflows/m1-coordinator.yml'
 
 permissions:
@@ -133,42 +137,23 @@ jobs:
           & .\M1AutomationRuntimeTests.exe
           if ($LASTEXITCODE -ne 0) { throw "M1 automation runtime tests failed" }
 
-      - name: Compile current PCBridge with M1 surface
+      - name: Verify reproducible M1 payload and integrated build
         shell: powershell
         run: |
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          $sources = @(
-            (Resolve-Path 'src\current\PCBridgePortable.cs').Path,
-            (Resolve-Path 'src\current\ScopedBridge.cs').Path,
-            (Resolve-Path 'src\current\ScopeTests.cs').Path,
-            (Resolve-Path 'src\current\DesktopIntegration.cs').Path,
-            (Resolve-Path 'src\current\IntegrationTests.cs').Path,
-            (Resolve-Path 'src\current\M1Integration.cs').Path,
-            (Resolve-Path 'src\vnext\M1Automation.cs').Path,
-            (Resolve-Path 'src\vnext\M1SessionBinding.cs').Path,
-            (Resolve-Path 'src\vnext\M1BrowserProfile.cs').Path,
-            (Resolve-Path 'src\vnext\M1BrowserBroker.cs').Path,
-            (Resolve-Path 'src\vnext\M1AutomationRuntime.cs').Path
-          )
-          & $csc /nologo /target:winexe /platform:x64 /optimize+ /out:PCBridgeM1SurfaceCompile.exe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:System.Security.dll /reference:System.IO.Compression.dll $sources
-          if ($LASTEXITCODE -ne 0) { throw "Current PCBridge + M1 surface compilation failed" }
-
-      - name: Compile current PCBridge with M1 integration
-        shell: powershell
-        run: |
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          $sources = @(
-            (Resolve-Path 'src\current\PCBridgePortable.cs').Path,
-            (Resolve-Path 'src\current\ScopedBridge.cs').Path,
-            (Resolve-Path 'src\current\ScopeTests.cs').Path,
-            (Resolve-Path 'src\current\DesktopIntegration.cs').Path,
-            (Resolve-Path 'src\current\IntegrationTests.cs').Path,
-            (Resolve-Path 'src\current\M1Integration.cs').Path,
-            (Resolve-Path 'src\vnext\M1Automation.cs').Path,
-            (Resolve-Path 'src\vnext\M1SessionBinding.cs').Path,
-            (Resolve-Path 'src\vnext\M1BrowserProfile.cs').Path,
-            (Resolve-Path 'src\vnext\M1BrowserBroker.cs').Path,
-            (Resolve-Path 'src\vnext\M1AutomationRuntime.cs').Path
-          )
-          & $csc /nologo /target:winexe /platform:x64 /optimize+ /out:PCBridge-M1-CompileContract.exe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:System.Security.dll /reference:System.IO.Compression.dll $sources
-          if ($LASTEXITCODE -ne 0) { throw "Current PCBridge + M1 integration compilation failed" }
+          $bundle = Join-Path $PWD 'ci-bundle'
+          $seed = Join-Path $PWD 'ci-payload-seed'
+          New-Item -ItemType Directory -Force -Path $bundle,$seed | Out-Null
+          Set-Content -LiteralPath (Join-Path $seed 'seed.txt') -Value 'CI base payload' -Encoding ASCII
+          Compress-Archive -Path (Join-Path $seed '*') -DestinationPath (Join-Path $bundle 'payload.zip') -Force
+          Set-Content -LiteralPath (Join-Path $bundle 'README.txt') -Value 'PCBridge M1 CI resource' -Encoding UTF8
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-m1-local.ps1 -BundleRoot $bundle -RepoRoot $PWD -OutputExe (Join-Path $bundle 'PCBridge-M1-CI.exe')
+          if ($LASTEXITCODE -ne 0) { throw "Reproducible M1 package/build script failed" }
+          if (-not (Test-Path (Join-Path $bundle 'PCBridge-M1-CI.exe'))) { throw "M1 CI executable missing" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $bundle 'payload-m1.zip'))
+          try {
+            $entries = @($zip.Entries | Where-Object { $_.FullName -like 'provider/chatgpt-extension/*' })
+            if ($entries.Count -ne 4) { throw "Packaged companion entry count mismatch" }
+          } finally {
+            $zip.Dispose()
+          }
