@@ -326,20 +326,20 @@ public sealed class M1BrowserBroker : IDisposable {
     state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"PRE_SEND_RETRY",ev.error,0);
     Retire(rec);publishNext=true;
    } else if(ev.kind=="provider_rate_limited") {
-    if(h.state=="SEND_DISPATCHED"||h.state=="AMBIGUOUS")
-     state.FailTerminal(run.run_id,run.generation,h.message_id,"rate limit observed after possible dispatch; delivery must be reconciled manually");
+    if(PostDispatchOrResponse(h.state))
+     state.FailTerminal(run.run_id,run.generation,h.message_id,"rate limit observed after provider dispatch/receipt; automatic user-message resend is fenced");
     else
      state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"RATE_LIMITED",ev.error,ev.retry_after_seconds);
     Retire(rec);publishNext=true;
    } else if(ev.kind=="provider_load_failed" || ev.kind=="provider_offline") {
-    if(h.state=="SEND_DISPATCHED"||h.state=="AMBIGUOUS")
-     state.FailTerminal(run.run_id,run.generation,h.message_id,"provider load failed while delivery was uncertain");
+    if(PostDispatchOrResponse(h.state))
+     state.FailTerminal(run.run_id,run.generation,h.message_id,"provider load failed after provider dispatch/receipt; automatic user-message resend is fenced");
     else
      state.ScheduleRecovery(run.run_id,run.generation,h.message_id,"LOAD_RECOVERY",ev.error,ev.retry_after_seconds);
     Retire(rec);publishNext=true;
    } else if(ev.kind=="provider_auth_required") {
-    if(h.state=="SEND_DISPATCHED"||h.state=="AMBIGUOUS")
-     state.FailTerminal(run.run_id,run.generation,h.message_id,"authentication required while delivery was uncertain");
+    if(PostDispatchOrResponse(h.state))
+     state.FailTerminal(run.run_id,run.generation,h.message_id,"authentication required after provider dispatch/receipt; response ownership requires human reconciliation");
     else
      state.BlockAuth(run.run_id,run.generation,h.message_id,ev.error);
     Retire(rec);
@@ -416,6 +416,12 @@ public sealed class M1BrowserBroker : IDisposable {
 
  bool ValidHost(string host) {
   return String.Equals(host,"127.0.0.1:"+port,StringComparison.OrdinalIgnoreCase);
+ }
+
+ static bool PostDispatchOrResponse(string state) {
+  return state=="SEND_DISPATCHED" || state=="AMBIGUOUS" ||
+   state=="USER_RECEIPT_CONFIRMED" || state=="RESPONSE_BINDING" ||
+   state=="TURN_RUNNING" || state=="TERMINAL_OBSERVED";
  }
 
  static bool CommandDue(M1BrowserCommand command,DateTime nowUtc) {
