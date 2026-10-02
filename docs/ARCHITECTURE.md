@@ -28,10 +28,25 @@ Recovery infrastructure is itself protected.
 ### 5. Durable Task Runtime
 Tracks task/run identity, atomic work units, state transitions, retries, checkpoints, errors, operator input and handoffs. State must survive bridge restarts.
 
-### 6. Relay Core
+### 6. Provider Adapter
+Provider-neutral boundary between PCBridge durable task state and a specific AI conversation surface.
+
+M1 implements ChatGPT only. The interface must still separate:
+- target identity/navigation
+- composer readiness
+- send authorization/dispatch
+- delivery receipt
+- response ownership/terminal evidence
+- provider error classification
+
+Future Claude/Gemini adapters may implement the same contract without changing Policy Engine, checkpoints, task state, HITL or Desktop Commander execution.
+
+The adapter never owns permission policy or durable run truth.
+
+### 7. Relay Core
 Durably hands work from one ChatGPT turn/agent to the next. It owns target identity, outbox, idempotency keys, strong receipts, ambiguity fencing, backoff and retry policy.
 
-### 7. Browser Provider
+### 8. Browser Provider
 Provider boundary for ChatGPT delivery.
 Preferred order:
 1. dedicated background browser/DOM provider
@@ -41,13 +56,13 @@ Preferred order:
 
 A normal background task must never steal user focus, mouse or keyboard.
 
-### 8. Human Supervisor Channel
+### 9. Human Supervisor Channel
 Out-of-band inbox for NOTE, GUIDANCE, COMMAND, INTERRUPT and APPROVAL messages. Ordinary steering is consumed at safe atomic boundaries; emergency interrupt is immediate.
 
-### 9. Agent Control Plane UI
+### 10. Agent Control Plane UI
 Dashboard + optional mini status window + tray lifecycle. Shows active tasks, pending approvals, recent activity, relay health, checkpoints and operator-message acknowledgement.
 
-### 10. Observability
+### 11. Observability
 Every task has stable `run_id`; every atomic unit/tool call gets trace/span identity. Logs should be structured and privacy-bounded.
 
 ## Non-interference invariant
