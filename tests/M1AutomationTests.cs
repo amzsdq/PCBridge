@@ -93,7 +93,8 @@ static class M1AutomationTests {
   ExpectError(delegate {
    store.Complete(run.run_id,run.generation,"not safe while send is ambiguous");
   },"cannot_complete_with_uncertain_delivery","cannot complete across ambiguous send");
-  store.Advance(run.run_id,run.generation,h.message_id,"USER_RECEIPT_CONFIRMED","","");
+  var lateReceipt=store.ConfirmProviderReceipt(run.run_id,run.generation,h.message_id,"late-user","doc-late");
+  Check(lateReceipt.state=="USER_RECEIPT_CONFIRMED" && lateReceipt.provider_user_message_id=="late-user","ambiguous delivery can only recover through an exact provider receipt");
   store.Advance(run.run_id,run.generation,h.message_id,"RESPONSE_BINDING","turn-2","");
   store.Advance(run.run_id,run.generation,h.message_id,"TURN_RUNNING","","");
   store.Advance(run.run_id,run.generation,h.message_id,"TERMINAL_OBSERVED","","");
@@ -151,6 +152,49 @@ static class M1AutomationTests {
   Check(failed.state=="FAILED_TERMINAL" && store.GetRun(failedRun.run_id).status=="WAITING_HUMAN","post-dispatch response conflict fails closed");
  }
 
+ static void TestDurableRecoveryScheduling() {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("recovery"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"a","b","c","none");
+  store.Advance(run.run_id,run.generation,h.message_id,"WAIT_CURRENT_TURN_END","","");
+
+  var waiting=store.ScheduleRecovery(run.run_id,run.generation,h.message_id,"LOAD_RECOVERY","page_load_failed",0);
+  DateTime due;
+  Check(waiting.state=="LOAD_RECOVERY" && waiting.recovery_attempt==1 &&
+        waiting.recovery_return_state=="WAIT_CURRENT_TURN_END" &&
+        DateTime.TryParse(waiting.next_attempt_utc,out due) && due.ToUniversalTime()>DateTime.UtcNow,
+        "source-turn load recovery is durable and returns to the source gate");
+  Check(!store.CanAutoDispatch(run.run_id,run.generation,h.message_id),"recovery cannot dispatch before durable due time");
+  ExpectError(delegate {
+   store.ActivateRecovery(run.run_id,run.generation,h.message_id,"doc-new");
+  },"recovery_not_due","early recovery activation rejected");
+
+  var rate=store.ScheduleRecovery(run.run_id,run.generation,h.message_id,"RATE_LIMITED","429",900);
+  Check(rate.state=="RATE_LIMITED" && rate.recovery_attempt==2 &&
+        DateTime.TryParse(rate.next_attempt_utc,out due) &&
+        due.ToUniversalTime()>=DateTime.UtcNow.AddSeconds(890),
+        "provider retry hint extends exponential rate-limit backoff");
+
+  AutomationHandoff exhausted=rate;
+  for(int i=0;i<7;i++)
+   exhausted=store.ScheduleRecovery(run.run_id,run.generation,h.message_id,"RATE_LIMITED","still_limited",0);
+  Check(exhausted.state=="FAILED_TERMINAL" && store.GetRun(run.run_id).status=="WAITING_HUMAN",
+        "bounded recovery escalates after eight retry attempts instead of looping forever");
+ }
+
+ static void TestAuthBlockBeforeDispatch() {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("authblock"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"a","b","c","none");
+  store.Advance(run.run_id,run.generation,h.message_id,"WAIT_CURRENT_TURN_END","","");
+  store.Advance(run.run_id,run.generation,h.message_id,"TARGET_READY","","");
+  var blocked=store.BlockAuth(run.run_id,run.generation,h.message_id,"sign-in required");
+  var restored=store.GetRun(run.run_id);
+  Check(blocked.state=="BLOCKED_AUTH" && restored.status=="BLOCKED_AUTH" &&
+        restored.attention.IndexOf("sign-in",StringComparison.OrdinalIgnoreCase)>=0,
+        "authentication requirement blocks safely before Send");
+ }
+
  static void TestInvalidTargetsAndTransitions() {
   var store=new AutomationStateStore(root);
   ExpectError(delegate {
@@ -174,6 +218,8 @@ static class M1AutomationTests {
    TestAmbiguityFenceAndTransitions();
    TestProviderOwnershipEvidence();
    TestHumanSupersessionAndTerminalFailure();
+   TestDurableRecoveryScheduling();
+   TestAuthBlockBeforeDispatch();
    TestInvalidTargetsAndTransitions();
    Console.WriteLine("M1 coordinator tests PASS: "+passed);
    Console.WriteLine("state_root="+root);
