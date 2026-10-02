@@ -89,6 +89,7 @@ async function postEvent(event) {
     if (response.ok && [
       'source_terminal','source_superseded',
       'delivered','ambiguous',
+      'ambiguous_delivered','ambiguous_unresolved',
       'terminal_confirmed','response_superseded'
     ].includes(event.kind)) await rememberTerminal(event.command_id);
     return {ok:response.ok,status:response.status};
@@ -131,17 +132,133 @@ async function exactTab(conversationId) {
   return matches.length===1 ? matches[0] : null;
 }
 
+function authLikeUrl(raw) {
+  try {
+    const url=new URL(raw || '');
+    if (/^(?:auth|account)\.openai\.com$/i.test(url.hostname)) return true;
+    return /\/(?:auth|login|signin)(?:\/|$)/i.test(url.pathname);
+  } catch { return false; }
+}
+
+async function commandEvent(command,kind,error='') {
+  return postEvent({
+    command_id:command.id,
+    kind,
+    conversation_id:command.conversation_id,
+    document_epoch:'',
+    payload_hash:command.payload_hash || '',
+    error
+  });
+}
+
+async function waitTabComplete(tabId,conversationId,timeoutMs=30000) {
+  return new Promise(resolve => {
+    let done=false;
+    const finish=value => {
+      if (done) return;
+      done=true;
+      chrome.tabs.onUpdated.removeListener(updated);
+      chrome.tabs.onRemoved.removeListener(removed);
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const inspect=async() => {
+      try {
+        const tab=await chrome.tabs.get(tabId);
+        if (authLikeUrl(tab.url)) return finish({status:'auth',tab});
+        if (tab.status==='complete') {
+          if (conversationFromUrl(tab.url)===conversationId) return finish({status:'exact',tab});
+          return finish({status:'mismatch',tab});
+        }
+      } catch { finish({status:'closed'}); }
+    };
+    const updated=(id,change,tab) => { if (id===tabId) void inspect(); };
+    const removed=id => { if (id===tabId) finish({status:'closed'}); };
+    chrome.tabs.onUpdated.addListener(updated);
+    chrome.tabs.onRemoved.addListener(removed);
+    const timer=setTimeout(()=>finish({status:'timeout'}),timeoutMs);
+    void inspect();
+  });
+}
+
+async function openExactTarget(command,reloadExisting) {
+  let tab=await exactTab(command.conversation_id);
+  try {
+    if (tab && reloadExisting) {
+      await chrome.tabs.reload(tab.id,{bypassCache:false});
+    } else if (!tab) {
+      tab=await chrome.tabs.create({
+        url:'https://chatgpt.com/c/'+encodeURIComponent(command.conversation_id),
+        active:false
+      });
+    }
+  } catch {
+    return {status:'open_failed'};
+  }
+  if (!tab?.id) return {status:'open_failed'};
+  return waitTabComplete(tab.id,command.conversation_id,30000);
+}
+
+async function deliverRecovery(command) {
+  const loaded=await openExactTarget(command,true);
+  if (loaded.status==='auth') {
+    await commandEvent(command,'provider_auth_required','authentication redirect during target recovery');
+    return;
+  }
+  if (loaded.status!=='exact') {
+    await commandEvent(command,'provider_load_failed','target recovery '+loaded.status);
+    return;
+  }
+  try {
+    const reply=await chrome.tabs.sendMessage(loaded.tab.id,{type:'pcbridge.m1.recover',command});
+    if (!reply?.accepted)
+      await commandEvent(command,'provider_load_failed',reply?.error || 'recovery content bridge unavailable');
+  } catch {
+    await commandEvent(command,'provider_load_failed','recovery content bridge unavailable');
+  }
+}
+
+async function deliverReconcile(command) {
+  const loaded=await openExactTarget(command,true);
+  if (loaded.status!=='exact') {
+    await commandEvent(command,'ambiguous_unresolved',
+      loaded.status==='auth'?'authentication required during ambiguity reconciliation':'target reload '+loaded.status);
+    return;
+  }
+  try {
+    const reply=await chrome.tabs.sendMessage(loaded.tab.id,{type:'pcbridge.m1.reconcile',command});
+    if (!reply?.accepted)
+      await commandEvent(command,'ambiguous_unresolved',reply?.error || 'reconcile content bridge unavailable');
+  } catch {
+    await commandEvent(command,'ambiguous_unresolved','reconcile content bridge unavailable');
+  }
+}
+
 async function deliver(command) {
   if (!command || typeof command.id!=='string' || typeof command.conversation_id!=='string') return;
   if ((await terminalIds()).includes(command.id)) return;
 
+  if (command.kind==='recover_target') {
+    await deliverRecovery(command);
+    return;
+  }
+  if (command.kind==='reconcile_ambiguous') {
+    await deliverReconcile(command);
+    return;
+  }
+
   let tab=await exactTab(command.conversation_id);
   if (!tab) {
-    tab=await chrome.tabs.create({
-      url:'https://chatgpt.com/c/'+encodeURIComponent(command.conversation_id),
-      active:false
-    });
-    if (!tab?.id) return;
+    const loaded=await openExactTarget(command,false);
+    if (loaded.status==='auth') {
+      await commandEvent(command,'provider_auth_required','authentication redirect while opening exact target');
+      return;
+    }
+    if (loaded.status!=='exact') {
+      await commandEvent(command,'provider_load_failed','exact target open '+loaded.status);
+      return;
+    }
+    tab=loaded.tab;
   }
 
   const type=
@@ -152,9 +269,17 @@ async function deliver(command) {
   if (!type) return;
 
   try {
-    await chrome.tabs.sendMessage(tab.id,{type,command});
+    const reply=await chrome.tabs.sendMessage(tab.id,{type,command});
+    if (reply?.accepted===false) {
+      const current=await chrome.tabs.get(tab.id).catch(()=>null);
+      if (current && authLikeUrl(current.url))
+        await commandEvent(command,'provider_auth_required','target redirected to authentication');
+      else
+        await commandEvent(command,'provider_load_failed',reply.error || 'content target mismatch');
+    }
   } catch {
-    // The exact tab may still be loading. Core retains custody and the command lease expires.
+    // The Core command lease remains authoritative. A loading page can be retried without
+    // granting Send twice because native dispatch still requires the durable authorization barrier.
   }
 }
 
