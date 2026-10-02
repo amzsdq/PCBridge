@@ -15,7 +15,7 @@ Exit criteria:
 Verification: exact text equality confirmed for the five imported core C# baseline files after GitHub upload.
 
 ## M1 — Autonomous Operation Ready
-Status: SPEC READY / IMPLEMENTATION NOT STARTED
+Status: IMPLEMENTATION IN PROGRESS — deterministic/runtime integration passes; live authenticated acceptance pending
 
 Detailed specification: `M1_AUTONOMOUS_OPERATION_SPEC.md`
 Research review: `research/COS_PARROT_M1_REVIEW_2026-10-02.md`
@@ -23,7 +23,7 @@ Research review: `research/COS_PARROT_M1_REVIEW_2026-10-02.md`
 Objective:
 A user can give one instruction and PCBridge can continue useful work across multiple ChatGPT turns without manual baton-passing, while preserving exact targeting, duplicate safety, approval boundaries, restart recovery and foreground-user non-interference.
 
-Build:
+Implemented/verified in source and isolated Windows tests:
 - exact-target browser/provider abstraction
 - durable relay outbox/inbox
 - run_id + monotonic seq + message_id
@@ -33,6 +33,14 @@ Build:
 - background DOM provider that does not depend on the user's active Chrome tab
 - restart-safe pending handoff state
 - use the current non-HARDLOCK-auto path so ordinary development work can continue without repeated approval
+- reproducible companion payload injection and full current+M1 integrated EXE build
+- MCP surface: `automation_prepare`, `automation_status`, `automation_handoff`, `automation_complete`
+
+Still required before M1 DONE:
+- install/select a companion-capable dedicated Chromium runtime on the live machine
+- first-login/authenticated provider setup
+- real current-turn → exact self-handoff → successor response cycle
+- repeated live baton campaign, fault injection, restart and non-interference acceptance
 
 Verify in real authenticated ChatGPT:
 - current turn completes and wakes the exact bound conversation
