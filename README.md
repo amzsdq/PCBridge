@@ -23,6 +23,7 @@ PCBridge is a local control plane for connecting AI agents to a user-owned Windo
 ## Repository authority
 
 - `docs/VNEXT_SPEC.md` — product/work specification.
+- `docs/M1_AUTONOMOUS_OPERATION_SPEC.md` — canonical first implementation milestone: reliable autonomous multi-turn operation.
 - `docs/ARCHITECTURE.md` — target architecture and component boundaries.
 - `docs/PERMISSION_MODEL.md` — approval, risk and scope model.
 - `docs/RELAY_RELIABILITY.md` — durable handoff/delivery model.
