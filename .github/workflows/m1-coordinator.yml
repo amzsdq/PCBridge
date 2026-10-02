@@ -5,6 +5,8 @@ on:
     paths:
       - 'src/vnext/M1Automation.cs'
       - 'tests/M1AutomationTests.cs'
+      - 'src/vnext/M1BrowserProfile.cs'
+      - 'tests/M1BrowserProfileTests.cs'
       - '.github/workflows/m1-coordinator.yml'
   pull_request:
     paths:
@@ -25,7 +27,9 @@ jobs:
         run: |
           $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           if (-not (Test-Path $csc)) { throw "Framework64 csc.exe not found" }
-          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1AutomationTests.exe /reference:System.Web.Extensions.dll /reference:System.Security.dll src/vnext/M1Automation.cs tests/M1AutomationTests.cs
+          $src = (Resolve-Path 'src\vnext\M1Automation.cs').Path
+          $test = (Resolve-Path 'tests\M1AutomationTests.cs').Path
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1AutomationTests.exe /reference:System.Web.Extensions.dll /reference:System.Security.dll $src $test
           if ($LASTEXITCODE -ne 0) { throw "M1 coordinator compilation failed" }
       - name: Run M1 coordinator contract tests
         shell: powershell
@@ -36,7 +40,9 @@ jobs:
         shell: powershell
         run: |
           $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1BrowserProfileTests.exe src/vnext/M1BrowserProfile.cs tests/M1BrowserProfileTests.cs
+          $src = (Resolve-Path 'src\vnext\M1BrowserProfile.cs').Path
+          $test = (Resolve-Path 'tests\M1BrowserProfileTests.cs').Path
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1BrowserProfileTests.exe $src $test
           if ($LASTEXITCODE -ne 0) { throw "M1 browser profile compilation failed" }
       - name: Run isolated browser profile tests
         shell: powershell
