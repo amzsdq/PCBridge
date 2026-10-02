@@ -14,6 +14,13 @@ static class IntegrationTests {
  static Dictionary<string,object> Approved(string name,object args){var req=O(Request(name,args));if((string)req["state"]=="pending")DesktopIntegration.Decide((string)req["request_id"],true);var result=Wait(req);var upstream=O(Core.Json().DeserializeObject((string)result["result_json"]));if(upstream.ContainsKey("isError")&&(bool)upstream["isError"])throw new Exception((string)result["result_json"]);return result;}
  public static int Run(){if(!Core.Instance.StartsWith("PCBridge-Integrated-Test-"))return 9;var passed=new List<string>();string report=Path.Combine(Path.GetDirectoryName(Core.Self),"integration-tests.json");try{
   Core.Prepare();ScopeEngine.ServerStart();DesktopIntegration.Start();Assert(Core.Load()==null,"No credentials in fresh bundle");passed.Add("fresh isolated bundle has no API key or inherited settings");
+  string companionRoot=Path.Combine(Core.Root,"provider","chatgpt-extension");
+  Assert(File.Exists(Path.Combine(companionRoot,"manifest.json"))&&
+         File.Exists(Path.Combine(companionRoot,"background.js"))&&
+         File.Exists(Path.Combine(companionRoot,"content.js"))&&
+         File.Exists(Path.Combine(companionRoot,"chatgpt-dom.js")),"M1 companion payload files missing");
+  passed.Add("M1 ChatGPT companion files are embedded and extracted into the isolated runtime");
+
   var catalog=O(DesktopIntegration.Call("desktop_tools",A()));var tools=(IList)catalog["tools"];Assert(tools.Count>=20,"Desktop tools discovered");passed.Add("real bundled Node + Desktop Commander initialized over stdio; "+tools.Count+" upstream tools discovered");
   Assert(DesktopIntegration.Tools().Any(x=>Core.Json().Serialize(x).Contains("\"desktop_relay\"")),"desktop_relay schema missing");var relayStatus=O(DesktopIntegration.Call("desktop_relay",A("action","status")));Assert(relayStatus.ContainsKey("binding")&&relayStatus.ContainsKey("latest"),"desktop_relay status shape invalid");passed.Add("built-in desktop_relay tool is registered and status is queryable without UI side effects");
   var allSchemas=ScopeEngine.Tools().Select(x=>Core.Json().Serialize(x)).ToArray();
@@ -21,6 +28,9 @@ static class IntegrationTests {
   string automationSession="integration-session-"+Guid.NewGuid().ToString("N");
   var prepare=O(M1McpIntegration.Call("automation_prepare",A("session_id",automationSession)));
   Assert((string)prepare["state"]=="BINDING_REQUIRED","unbound M1 session must fail closed");
+  var m1Runtime=O(prepare["runtime"]);
+  Assert(Convert.ToBoolean(m1Runtime["companion_ready"]),"M1 runtime did not validate the extracted companion");
+
   var binding=O(prepare["binding"]);string bindingId=(string)binding["binding_id"];
   const string automationConversation="12345678-abcd-4abc-8abc-123456789012";
   M1McpIntegration.Runtime.Bindings.ProposeCandidate(bindingId,automationConversation,"integration-document");
