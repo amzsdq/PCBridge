@@ -1,0 +1,34 @@
+name: M1 Coordinator Contract
+
+on:
+  push:
+    paths:
+      - 'src/vnext/M1Automation.cs'
+      - 'tests/M1AutomationTests.cs'
+      - '.github/workflows/m1-coordinator.yml'
+  pull_request:
+    paths:
+      - 'src/vnext/M1Automation.cs'
+      - 'tests/M1AutomationTests.cs'
+      - '.github/workflows/m1-coordinator.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-framework-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile M1 coordinator contract tests
+        shell: powershell
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { throw "Framework64 csc.exe not found" }
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1AutomationTests.exe /reference:System.Web.Extensions.dll /reference:System.Security.dll src/vnext/M1Automation.cs tests/M1AutomationTests.cs
+          if ($LASTEXITCODE -ne 0) { throw "M1 coordinator compilation failed" }
+      - name: Run M1 coordinator contract tests
+        shell: powershell
+        run: |
+          & .\M1AutomationTests.exe
+          if ($LASTEXITCODE -ne 0) { throw "M1 coordinator tests failed" }
