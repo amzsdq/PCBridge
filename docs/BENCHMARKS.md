@@ -153,6 +153,26 @@ Transient and throttling failures should use bounded exponential backoff; non-tr
 Reference:
 - https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/retry-backoff.html
 
+## Chrome extension loading / dedicated provider runtime
+
+Chrome's extension platform changed the viability of command-line side-loading in branded Chrome:
+
+- Chrome 137 removed `--load-extension` from branded Chrome builds.
+- Chrome 139 removed `--disable-extensions-except` from branded Chrome builds.
+- Chrome's own extension-testing guidance points testing/automation use cases toward supported testing browsers/tooling such as Chrome for Testing, Puppeteer/Playwright, Selenium and WebDriverIO.
+
+References:
+- https://developer.chrome.com/blog/extension-news-june-2025
+- https://developer.chrome.com/docs/extensions/whats-new
+- https://developer.chrome.com/docs/extensions/how-to/test/end-to-end-testing
+- https://developer.chrome.com/docs/automation-and-testing/download-test-binaries
+
+Decision:
+- Do not depend on the user's ordinary branded Chrome/Edge for M1 companion side-loading.
+- Use a PCBridge-owned companion-capable testing Chromium runtime and isolated profile.
+- Keep browser-runtime setup reversible and independently replaceable.
+- Do not silently consume a large download while foreground user activity may be bandwidth-sensitive.
+
 ## Playwright
 
 Relevant browser reliability patterns:
