@@ -20,8 +20,8 @@ if ([String]::IsNullOrWhiteSpace($OutputExe)) {
 $output = [IO.Path]::GetFullPath($OutputExe)
 $payload = Join-Path $bundle 'payload-m1.zip'
 
-& (Join-Path $repo 'scripts\package-m1-companion.ps1') -InputZip $basePayload -OutputZip $payload -RepoRoot $repo
-if ($LASTEXITCODE -ne 0) { throw 'M1 companion packaging failed.' }
+$packageResult = & (Join-Path $repo 'scripts\package-m1-companion.ps1') -InputZip $basePayload -OutputZip $payload -RepoRoot $repo
+if (-not $packageResult) { throw 'M1 companion packaging produced no verification result.' }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc -PathType Leaf)) { throw "Framework64 csc.exe not found: $csc" }
