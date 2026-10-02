@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Web.Script.Serialization;
+using System.Globalization;
 
 public sealed class AutomationTarget {
  public string provider="";
@@ -37,6 +38,8 @@ public sealed class AutomationHandoff {
  public string response_turn_id="";
  public string terminal_utc="";
  public int attempt;
+ public int recovery_attempt;
+ public string recovery_return_state="";
  public string next_attempt_utc="";
  public string error_class="";
 }
@@ -299,7 +302,7 @@ public sealed class AutomationStateStore {
    var run=FindRun(state,runId);
    RequireGeneration(run,generation);
    var h=FindHandoff(run,messageId);
-   if(h.state!="SEND_DISPATCHED" && h.state!="USER_RECEIPT_CONFIRMED")
+   if(h.state!="SEND_DISPATCHED" && h.state!="AMBIGUOUS" && h.state!="USER_RECEIPT_CONFIRMED")
     throw new InvalidOperationException("provider_receipt_wrong_state");
    string user=ProviderId(providerUserMessageId,"provider_user_message_id");
    string epoch=ProviderId(documentEpoch,"provider_document_epoch");
@@ -307,9 +310,11 @@ public sealed class AutomationStateStore {
     throw new InvalidOperationException("provider_user_message_conflict");
    h.provider_user_message_id=user;
    h.provider_document_epoch=epoch;
-   if(h.state=="SEND_DISPATCHED") {
+   if(h.state=="SEND_DISPATCHED" || h.state=="AMBIGUOUS") {
     h.state="USER_RECEIPT_CONFIRMED";
     h.receipt_utc=Utc();
+    h.next_attempt_utc="";
+    h.recovery_return_state="";
    }
    h.updated_utc=Utc();
    run.status="TURN_RUNNING";
@@ -405,6 +410,99 @@ public sealed class AutomationStateStore {
   });
  }
 
+ public AutomationHandoff ScheduleRecovery(
+  string runId,long generation,string messageId,string recoveryState,string errorClass,int providerRetryAfterSeconds) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   string target=(recoveryState??"").Trim().ToUpperInvariant();
+   if(target!="PRE_SEND_RETRY" && target!="RATE_LIMITED" && target!="LOAD_RECOVERY")
+    throw new ArgumentException("recovery_state invalid");
+   if(h.state!="PRE_SEND_RETRY" && h.state!="RATE_LIMITED" && h.state!="LOAD_RECOVERY") {
+    if(!CanTransition(h.state,target))
+     throw new InvalidOperationException("invalid_handoff_transition: "+h.state+" -> "+target);
+    h.recovery_return_state=(h.state=="HANDOFF_COMMITTED"||h.state=="WAIT_CURRENT_TURN_END")
+     ?"WAIT_CURRENT_TURN_END":"TARGET_READY";
+   } else if(String.IsNullOrWhiteSpace(h.recovery_return_state)) {
+    h.recovery_return_state="TARGET_READY";
+   }
+
+   h.recovery_attempt++;
+   if(h.recovery_attempt>8) {
+    h.state="FAILED_TERMINAL";
+    h.error_class="recovery_attempts_exhausted: "+CleanError(errorClass);
+    h.next_attempt_utc="";
+    h.updated_utc=Utc();
+    run.status="WAITING_HUMAN";
+    run.attention=h.error_class;
+    run.updated_utc=h.updated_utc;
+    SaveUnsafe(state);
+    return CloneHandoff(h);
+   }
+
+   h.state=target;
+   h.error_class=CleanError(errorClass);
+   int delay=RecoveryDelaySeconds(target,h.recovery_attempt,providerRetryAfterSeconds);
+   h.next_attempt_utc=DateTime.UtcNow.AddSeconds(delay).ToString("o");
+   h.updated_utc=Utc();
+   run.status=target=="RATE_LIMITED"?"RATE_LIMITED":"RECOVERING";
+   run.attention="";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff ActivateRecovery(
+  string runId,long generation,string messageId,string documentEpoch) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(h.state!="PRE_SEND_RETRY" && h.state!="RATE_LIMITED" && h.state!="LOAD_RECOVERY")
+    throw new InvalidOperationException("recovery_not_active");
+   if(!RecoveryDue(h))throw new InvalidOperationException("recovery_not_due");
+   string target=String.IsNullOrWhiteSpace(h.recovery_return_state)?"TARGET_READY":h.recovery_return_state;
+   if(target!="TARGET_READY" && target!="WAIT_CURRENT_TURN_END")
+    throw new InvalidOperationException("recovery_return_state_invalid");
+   h.state=target;
+   h.provider_document_epoch=ProviderId(documentEpoch,"provider_document_epoch");
+   h.next_attempt_utc="";
+   h.recovery_return_state="";
+   h.updated_utc=Utc();
+   run.status="HANDOFF_PENDING";
+   run.attention="";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff BlockAuth(
+  string runId,long generation,string messageId,string reason) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(IsUncertainOrDispatched(h.state))
+    throw new InvalidOperationException("auth_block_after_dispatch_requires_reconciliation");
+   if(IsTerminalHandoff(h.state))return CloneHandoff(h);
+   h.state="BLOCKED_AUTH";
+   h.error_class=CleanError(reason);
+   h.next_attempt_utc="";
+   h.updated_utc=Utc();
+   run.status="BLOCKED_AUTH";
+   run.attention=h.error_class.Length>0?h.error_class:"ChatGPT sign-in or interactive authentication required";
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
  public AutomationHandoff FailTerminal(
   string runId,long generation,string messageId,string reason) {
   return Locked<AutomationHandoff>(delegate {
@@ -474,9 +572,10 @@ public sealed class AutomationStateStore {
    var run=FindRun(LoadUnsafe(),runId);
    RequireGeneration(run,generation);
    var h=FindHandoff(run,messageId);
+   if(h.state=="PRE_SEND_RETRY" || h.state=="RATE_LIMITED" || h.state=="LOAD_RECOVERY")
+    return RecoveryDue(h);
    return h.state=="HANDOFF_COMMITTED" || h.state=="WAIT_CURRENT_TURN_END" ||
-    h.state=="TARGET_READY" || h.state=="COMPOSER_CLAIMED" || h.state=="PRE_SEND_RETRY" ||
-    h.state=="RATE_LIMITED" || h.state=="LOAD_RECOVERY";
+    h.state=="TARGET_READY" || h.state=="COMPOSER_CLAIMED";
   });
  }
 
@@ -652,7 +751,7 @@ public sealed class AutomationStateStore {
   if(from=="SEND_AUTHORIZED")return to=="SEND_DISPATCHED"||to=="PRE_SEND_RETRY"||to=="RATE_LIMITED"||to=="LOAD_RECOVERY";
   if(from=="SEND_DISPATCHED")return to=="USER_RECEIPT_CONFIRMED"||to=="AMBIGUOUS";
   if(from=="AMBIGUOUS")return to=="USER_RECEIPT_CONFIRMED"||to=="PRE_SEND_RETRY"||to=="FAILED_TERMINAL";
-  if(from=="PRE_SEND_RETRY"||from=="RATE_LIMITED"||from=="LOAD_RECOVERY")return to=="TARGET_READY"||to=="BLOCKED_AUTH"||to=="TARGET_MISMATCH"||to=="FAILED_TERMINAL";
+  if(from=="PRE_SEND_RETRY"||from=="RATE_LIMITED"||from=="LOAD_RECOVERY")return to=="TARGET_READY"||to=="WAIT_CURRENT_TURN_END"||to=="BLOCKED_AUTH"||to=="TARGET_MISMATCH"||to=="FAILED_TERMINAL";
   if(from=="USER_RECEIPT_CONFIRMED")return to=="RESPONSE_BINDING";
   if(from=="RESPONSE_BINDING")return to=="TURN_RUNNING"||to=="TERMINAL_OBSERVED";
   if(from=="TURN_RUNNING")return to=="TERMINAL_OBSERVED";
@@ -662,12 +761,38 @@ public sealed class AutomationStateStore {
 
  static string RunStatusForHandoff(string state) {
   if(state=="AMBIGUOUS")return "AMBIGUOUS";
+  if(state=="RATE_LIMITED")return "RATE_LIMITED";
+  if(state=="PRE_SEND_RETRY"||state=="LOAD_RECOVERY")return "RECOVERING";
   if(state=="BLOCKED_AUTH")return "BLOCKED_AUTH";
   if(state=="TARGET_MISMATCH")return "TARGET_MISMATCH";
   if(state=="FAILED_TERMINAL")return "FAILED_TERMINAL";
   if(state=="TERMINAL_CONFIRMED")return "RUNNING";
   if(state=="TURN_RUNNING"||state=="RESPONSE_BINDING"||state=="USER_RECEIPT_CONFIRMED")return "TURN_RUNNING";
   return "HANDOFF_PENDING";
+ }
+
+ static string CleanError(string value) {
+  string v=(value??"").Trim();
+  if(v.Length>1000)v=v.Substring(0,1000);
+  return v;
+ }
+
+ static int RecoveryDelaySeconds(string state,int attempt,int providerRetryAfterSeconds) {
+  int[] schedule=state=="RATE_LIMITED"
+   ?new[]{120,300,600,1200,2400,3600}
+   :new[]{5,15,30,60,120,300};
+  int index=Math.Max(0,Math.Min(schedule.Length-1,attempt-1));
+  int delay=schedule[index];
+  if(providerRetryAfterSeconds>0)delay=Math.Max(delay,Math.Min(providerRetryAfterSeconds,21600));
+  return delay;
+ }
+
+ static bool RecoveryDue(AutomationHandoff h) {
+  if(h==null||String.IsNullOrWhiteSpace(h.next_attempt_utc))return true;
+  DateTime due;
+  if(!DateTime.TryParse(h.next_attempt_utc,CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind,out due))
+   return false;
+  return DateTime.UtcNow>=due.ToUniversalTime();
  }
 
  static string Utc() { return DateTime.UtcNow.ToString("o"); }
