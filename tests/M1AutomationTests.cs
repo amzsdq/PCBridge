@@ -101,6 +101,56 @@ static class M1AutomationTests {
   Check(terminal.response_turn_id=="turn-2" && terminal.terminal_utc.Length>0,"response lease reaches terminal");
  }
 
+ static void TestProviderOwnershipEvidence() {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("ownership"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"source work","continue","verified","none");
+
+  var source=store.BindSourceTurn(run.run_id,run.generation,h.message_id,"source-user","source-turn","doc-one");
+  Check(source.state=="WAIT_CURRENT_TURN_END" && source.source_response_turn_id=="source-turn","source response lease bound");
+  var ready=store.MarkSourceTerminal(run.run_id,run.generation,h.message_id,"source-user","source-turn","doc-one");
+  Check(ready.state=="TARGET_READY","exact source terminal opens handoff send");
+
+  store.Advance(run.run_id,run.generation,h.message_id,"COMPOSER_CLAIMED","","");
+  store.Advance(run.run_id,run.generation,h.message_id,"SEND_AUTHORIZED","","");
+  store.Advance(run.run_id,run.generation,h.message_id,"SEND_DISPATCHED","","");
+  var receipt=store.ConfirmProviderReceipt(run.run_id,run.generation,h.message_id,"handoff-user","doc-two");
+  Check(receipt.state=="USER_RECEIPT_CONFIRMED" && receipt.provider_user_message_id=="handoff-user","exact native send receipt persisted");
+
+  var response=store.BindResponseTurn(run.run_id,run.generation,h.message_id,"handoff-user","response-turn","doc-two");
+  Check(response.state=="TURN_RUNNING" && response.response_turn_id=="response-turn","successor response lease bound");
+  var observed=store.MarkResponseEvidence(run.run_id,run.generation,h.message_id,"response-turn","doc-two","TERMINAL_OBSERVED","");
+  Check(observed.state=="TERMINAL_OBSERVED","provider terminal remains provisional");
+  var reopened=store.MarkResponseEvidence(run.run_id,run.generation,h.message_id,"response-turn","doc-two","TURN_RUNNING","");
+  Check(reopened.state=="TURN_RUNNING","new response activity revokes provisional terminal");
+  store.MarkResponseEvidence(run.run_id,run.generation,h.message_id,"response-turn","doc-two","TERMINAL_OBSERVED","");
+  var terminal=store.MarkResponseEvidence(run.run_id,run.generation,h.message_id,"response-turn","doc-two","TERMINAL_CONFIRMED","");
+  Check(terminal.state=="TERMINAL_CONFIRMED" && terminal.terminal_utc.Length>0,"same exact response terminal confirmed");
+
+  ExpectError(delegate {
+   store.BindResponseTurn(run.run_id,run.generation,h.message_id,"different-user","response-turn","doc-two");
+  },"response_question_not_owned","different native question cannot own response");
+ }
+
+ static void TestHumanSupersessionAndTerminalFailure() {
+  var store=new AutomationStateStore(root);
+  var run=store.CreateRun(Target("humanstop"));
+  var h=store.QueueHandoff(run.run_id,run.generation,"a","b","c","none");
+  store.BindSourceTurn(run.run_id,run.generation,h.message_id,"source-user-2","source-turn-2","doc-x");
+  var cancelled=store.CancelForHuman(run.run_id,run.generation,h.message_id,"newer user input");
+  Check(cancelled.state=="CANCELLED" && store.GetRun(run.run_id).status=="WAITING_HUMAN","human supersession cancels only pre-send baton");
+
+  var failedRun=store.CreateRun(Target("terminalfail"));
+  var fh=store.QueueHandoff(failedRun.run_id,failedRun.generation,"a","b","c","none");
+  store.BindSourceTurn(failedRun.run_id,failedRun.generation,fh.message_id,"src","src-turn","doc-f");
+  store.MarkSourceTerminal(failedRun.run_id,failedRun.generation,fh.message_id,"src","src-turn","doc-f");
+  store.Advance(failedRun.run_id,failedRun.generation,fh.message_id,"COMPOSER_CLAIMED","","");
+  store.Advance(failedRun.run_id,failedRun.generation,fh.message_id,"SEND_AUTHORIZED","","");
+  store.Advance(failedRun.run_id,failedRun.generation,fh.message_id,"SEND_DISPATCHED","","");
+  var failed=store.FailTerminal(failedRun.run_id,failedRun.generation,fh.message_id,"response ownership conflict");
+  Check(failed.state=="FAILED_TERMINAL" && store.GetRun(failedRun.run_id).status=="WAITING_HUMAN","post-dispatch response conflict fails closed");
+ }
+
  static void TestInvalidTargetsAndTransitions() {
   var store=new AutomationStateStore(root);
   ExpectError(delegate {
@@ -122,6 +172,8 @@ static class M1AutomationTests {
    TestConflictAndGenerationFence();
    TestCompletionAndBlocking();
    TestAmbiguityFenceAndTransitions();
+   TestProviderOwnershipEvidence();
+   TestHumanSupersessionAndTerminalFailure();
    TestInvalidTargetsAndTransitions();
    Console.WriteLine("M1 coordinator tests PASS: "+passed);
    Console.WriteLine("state_root="+root);
