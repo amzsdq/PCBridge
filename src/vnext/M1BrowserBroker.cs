@@ -281,8 +281,7 @@ public sealed class M1BrowserBroker : IDisposable {
   byte[] header=ReadUntil(stream,new byte[]{13,10,13,10},16384);
   if(header==null)return null;
   string raw=Encoding.ASCII.GetString(header);
-  string[] lines=raw.Split(new[]{"
-"},StringSplitOptions.None);
+  string[] lines=raw.Split(new[]{"\r\n"},StringSplitOptions.None);
   if(lines.Length<1)return null;
   string[] first=lines[0].Split(' ');
   if(first.Length<2)return null;
@@ -319,28 +318,18 @@ public sealed class M1BrowserBroker : IDisposable {
   string json=status==204?"":new JavaScriptSerializer{MaxJsonLength=1000000}.Serialize(body);
   byte[] bytes=Encoding.UTF8.GetBytes(json);
   var b=new StringBuilder();
-  b.Append("HTTP/1.1 ").Append(status).Append(' ').Append(StatusText(status)).Append("
-");
-  b.Append("Content-Type: application/json; charset=utf-8
-");
-  b.Append("Content-Length: ").Append(bytes.Length).Append("
-");
-  b.Append("Cache-Control: no-store
-");
-  b.Append("Connection: close
-");
+  b.Append("HTTP/1.1 ").Append(status).Append(' ').Append(StatusText(status)).Append("\r\n");
+  b.Append("Content-Type: application/json; charset=utf-8\r\n");
+  b.Append("Content-Length: ").Append(bytes.Length).Append("\r\n");
+  b.Append("Cache-Control: no-store\r\n");
+  b.Append("Connection: close\r\n");
   if(ValidExtensionOrigin(origin)) {
-   b.Append("Access-Control-Allow-Origin: ").Append(origin).Append("
-");
-   b.Append("Vary: Origin
-");
-   b.Append("Access-Control-Allow-Headers: Authorization, Content-Type, X-PCBridge-Protocol
-");
-   b.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS
-");
+   b.Append("Access-Control-Allow-Origin: ").Append(origin).Append("\r\n");
+   b.Append("Vary: Origin\r\n");
+   b.Append("Access-Control-Allow-Headers: Authorization, Content-Type, X-PCBridge-Protocol\r\n");
+   b.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
   }
-  b.Append("
-");
+  b.Append("\r\n");
   byte[] headers=Encoding.ASCII.GetBytes(b.ToString());
   stream.Write(headers,0,headers.Length);if(bytes.Length>0)stream.Write(bytes,0,bytes.Length);stream.Flush();
  }
