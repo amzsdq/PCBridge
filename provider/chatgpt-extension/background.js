@@ -60,7 +60,7 @@ async function postEvent(event) {
   try {
     const r=await call(broker.port,'/v1/event',{method:'POST',body:event,timeout:5000});
     if (!r.ok && r.status===401) { broker=null; return {ok:false}; }
-    if (r.ok && ['delivered','ambiguous','pre_send_failed'].includes(event.kind)) await rememberTerminal(event.command_id);
+    if (r.ok && ['delivered','ambiguous'].includes(event.kind)) await rememberTerminal(event.command_id);
     return {ok:r.ok};
   } catch { return {ok:false}; }
 }
