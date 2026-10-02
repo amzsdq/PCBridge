@@ -53,7 +53,9 @@ assert(/gate_current_turn/.test(bgSource) && /send_handoff/.test(bgSource) && /o
 assert(/recover_target/.test(bgSource) && /reconcile_ambiguous/.test(bgSource),'recovery and ambiguity command routing required');
 assert(/chrome\.tabs\.reload/.test(bgSource),'exact-target recovery must use background tab reload');
 assert(/ambiguous_unresolved/.test(bgSource),'unresolved ambiguous delivery must fail closed');
-assert(!/reconcile_ambiguous[\s\S]{0,2000}pcbridge\.m1\.send/.test(bgSource),'ambiguity reconciliation must not reuse native Send');
+const reconcileFn=bgSource.slice(bgSource.indexOf('async function deliverReconcile'),bgSource.indexOf('async function deliver(command)'));
+assert(reconcileFn.includes('pcbridge.m1.reconcile'),'reconcile function must invoke only the reconciliation content path');
+assert(!reconcileFn.includes('pcbridge.m1.send'),'ambiguity reconciliation must not reuse native Send');
 assert(/active:false/.test(bgSource),'provider tab must never be activated by normal delivery');
 assert(!/chrome\.windows\.update\([^\n]*focused\s*:\s*true/.test(bgSource),'foreground focus activation forbidden');
 
