@@ -15,7 +15,10 @@ Exit criteria:
 Verification: exact text equality confirmed for the five imported core C# baseline files after GitHub upload.
 
 ## M1 — Autonomous Operation Ready
-Status: PENDING
+Status: SPEC READY / IMPLEMENTATION NOT STARTED
+
+Detailed specification: `M1_AUTONOMOUS_OPERATION_SPEC.md`
+Research review: `research/COS_PARROT_M1_REVIEW_2026-10-02.md`
 
 Objective:
 A user can give one instruction and PCBridge can continue useful work across multiple ChatGPT turns without manual baton-passing, while preserving exact targeting, duplicate safety, approval boundaries, restart recovery and foreground-user non-interference.
