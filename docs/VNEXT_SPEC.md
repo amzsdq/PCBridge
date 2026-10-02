@@ -317,7 +317,7 @@ Repeated identical retry without correcting the failure cause is not an acceptab
 
 M0 — repository/spec/benchmarks/baseline foundation. DONE.
 
-M1 — Autonomous Operation Ready. This is the first implementation milestone and must be completed before broader feature work. It combines exact durable relay, successor-turn startup, duplicate fencing, transient-error recovery, restart safety, foreground-user non-interference, and continued use of the current non-HARDLOCK-auto execution path.
+M1 — Autonomous Operation Ready. This is the first implementation milestone and must be completed before broader feature work. Canonical implementation contract: `M1_AUTONOMOUS_OPERATION_SPEC.md`. It combines exact durable relay, successor-turn startup, duplicate fencing, transient-error recovery, restart safety, foreground-user non-interference, and continued use of the current non-HARDLOCK-auto execution path.
 
 M1 acceptance requires a real task to cross multiple consecutive ChatGPT baton handoffs without manual user prompting, without wrong-chat delivery, duplicate work, visible console/PowerShell dependency, focus stealing, keyboard/mouse interference, or unsafe blind retries.
 
