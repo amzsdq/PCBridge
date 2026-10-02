@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -362,6 +363,27 @@ public sealed class AutomationStateStore {
    if(!String.IsNullOrWhiteSpace(errorClass))h.error_class=errorClass.Trim();
    h.updated_utc=Utc();
    run.status=RunStatusForHandoff(h.state);
+   run.updated_utc=h.updated_utc;
+   SaveUnsafe(state);
+   return CloneHandoff(h);
+  });
+ }
+
+ public AutomationHandoff CancelForHuman(
+  string runId,long generation,string messageId,string reason) {
+  return Locked<AutomationHandoff>(delegate {
+   var state=LoadUnsafe();
+   var run=FindRun(state,runId);
+   RequireGeneration(run,generation);
+   var h=FindHandoff(run,messageId);
+   if(IsUncertainOrDispatched(h.state))
+    throw new InvalidOperationException("cannot_cancel_after_dispatch");
+   if(IsTerminalHandoff(h.state))return CloneHandoff(h);
+   h.state="CANCELLED";
+   h.error_class=Required(reason,"reason",1000);
+   h.updated_utc=Utc();
+   run.status="WAITING_HUMAN";
+   run.attention=h.error_class;
    run.updated_utc=h.updated_utc;
    SaveUnsafe(state);
    return CloneHandoff(h);
