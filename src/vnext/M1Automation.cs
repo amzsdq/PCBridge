@@ -744,10 +744,10 @@ public sealed class AutomationStateStore {
 
  static bool CanTransition(string from,string to) {
   if(from==to)return true;
-  if(from=="HANDOFF_COMMITTED")return to=="WAIT_CURRENT_TURN_END"||to=="CANCELLED";
-  if(from=="WAIT_CURRENT_TURN_END")return to=="TARGET_READY"||to=="CANCELLED"||to=="LOAD_RECOVERY";
+  if(from=="HANDOFF_COMMITTED")return to=="WAIT_CURRENT_TURN_END"||to=="CANCELLED"||to=="RATE_LIMITED"||to=="LOAD_RECOVERY";
+  if(from=="WAIT_CURRENT_TURN_END")return to=="TARGET_READY"||to=="CANCELLED"||to=="RATE_LIMITED"||to=="LOAD_RECOVERY";
   if(from=="TARGET_READY")return to=="COMPOSER_CLAIMED"||to=="PRE_SEND_RETRY"||to=="TARGET_MISMATCH"||to=="BLOCKED_AUTH"||to=="RATE_LIMITED"||to=="LOAD_RECOVERY";
-  if(from=="COMPOSER_CLAIMED")return to=="SEND_AUTHORIZED"||to=="PRE_SEND_RETRY"||to=="TARGET_MISMATCH"||to=="LOAD_RECOVERY";
+  if(from=="COMPOSER_CLAIMED")return to=="SEND_AUTHORIZED"||to=="PRE_SEND_RETRY"||to=="TARGET_MISMATCH"||to=="RATE_LIMITED"||to=="LOAD_RECOVERY";
   if(from=="SEND_AUTHORIZED")return to=="SEND_DISPATCHED"||to=="PRE_SEND_RETRY"||to=="RATE_LIMITED"||to=="LOAD_RECOVERY";
   if(from=="SEND_DISPATCHED")return to=="USER_RECEIPT_CONFIRMED"||to=="AMBIGUOUS";
   if(from=="AMBIGUOUS")return to=="USER_RECEIPT_CONFIRMED"||to=="PRE_SEND_RETRY"||to=="FAILED_TERMINAL";
