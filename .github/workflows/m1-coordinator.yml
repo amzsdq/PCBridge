@@ -6,6 +6,10 @@ on:
       - 'src/vnext/M1Automation.cs'
       - 'tests/M1AutomationTests.cs'
       - 'src/vnext/M1BrowserProfile.cs'
+      - 'tests/M1SessionBindingTests.cs'
+      - 'tests/M1AutomationRuntimeTests.cs'
+      - 'src/vnext/M1SessionBinding.cs'
+      - 'src/vnext/M1AutomationRuntime.cs'
       - 'tests/M1BrowserProfileTests.cs'
       - 'tests/M1BrowserBrokerTests.cs'
       - 'src/vnext/M1BrowserBroker.cs'
@@ -15,7 +19,17 @@ on:
   pull_request:
     paths:
       - 'src/vnext/M1Automation.cs'
+      - 'src/vnext/M1AutomationRuntime.cs'
+      - 'src/vnext/M1SessionBinding.cs'
+      - 'src/vnext/M1BrowserProfile.cs'
+      - 'src/vnext/M1BrowserBroker.cs'
       - 'tests/M1AutomationTests.cs'
+      - 'tests/M1AutomationRuntimeTests.cs'
+      - 'tests/M1SessionBindingTests.cs'
+      - 'tests/M1BrowserProfileTests.cs'
+      - 'tests/M1BrowserBrokerTests.cs'
+      - 'provider/chatgpt-extension/**'
+      - 'tests/m1-browser-companion-contract.mjs'
       - '.github/workflows/m1-coordinator.yml'
 
 permissions:
@@ -74,3 +88,35 @@ jobs:
         run: |
           & .\M1BrowserBrokerTests.exe
           if ($LASTEXITCODE -ne 0) { throw "M1 browser broker tests failed" }
+
+      - name: Compile M1 session binding tests
+        shell: powershell
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $binding = (Resolve-Path 'src\vnext\M1SessionBinding.cs').Path
+          $test = (Resolve-Path 'tests\M1SessionBindingTests.cs').Path
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1SessionBindingTests.exe /reference:System.Web.Extensions.dll /reference:System.Security.dll $binding $test
+          if ($LASTEXITCODE -ne 0) { throw "M1 session binding compilation failed" }
+      - name: Run M1 session binding tests
+        shell: powershell
+        run: |
+          & .\M1SessionBindingTests.exe
+          if ($LASTEXITCODE -ne 0) { throw "M1 session binding tests failed" }
+
+      - name: Compile M1 automation runtime tests
+        shell: powershell
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $automation = (Resolve-Path 'src\vnext\M1Automation.cs').Path
+          $binding = (Resolve-Path 'src\vnext\M1SessionBinding.cs').Path
+          $profile = (Resolve-Path 'src\vnext\M1BrowserProfile.cs').Path
+          $broker = (Resolve-Path 'src\vnext\M1BrowserBroker.cs').Path
+          $runtime = (Resolve-Path 'src\vnext\M1AutomationRuntime.cs').Path
+          $test = (Resolve-Path 'tests\M1AutomationRuntimeTests.cs').Path
+          & $csc /nologo /target:exe /platform:x64 /optimize+ /out:M1AutomationRuntimeTests.exe /reference:System.Web.Extensions.dll /reference:System.Security.dll $automation $binding $profile $broker $runtime $test
+          if ($LASTEXITCODE -ne 0) { throw "M1 automation runtime compilation failed" }
+      - name: Run M1 automation runtime tests
+        shell: powershell
+        run: |
+          & .\M1AutomationRuntimeTests.exe
+          if ($LASTEXITCODE -ne 0) { throw "M1 automation runtime tests failed" }
