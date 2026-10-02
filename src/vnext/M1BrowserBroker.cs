@@ -10,12 +10,16 @@ using System.Security.Cryptography;
 
 public sealed class M1BrowserCommand {
  public string id="";
+ public string handoff_id="";
+ public string kind="";
  public string run_id="";
  public long generation;
  public int seq;
  public string conversation_id="";
  public string payload_hash="";
  public string text="";
+ public string user_message_id="";
+ public string response_turn_id="";
 }
 
 public sealed class M1BrowserEvent {
@@ -25,6 +29,7 @@ public sealed class M1BrowserEvent {
  public string document_epoch="";
  public string payload_hash="";
  public string user_message_id="";
+ public string response_turn_id="";
  public string error="";
  public bool rebound;
 }
@@ -81,23 +86,44 @@ public sealed class M1BrowserBroker : IDisposable {
   }
  }
 
+ public int RepublishRecoverable() {
+  int count=0;
+  var snapshot=state.Snapshot();
+  foreach(var run in snapshot.runs) {
+   if(run==null || run.handoffs==null)continue;
+   foreach(var handoff in run.handoffs) {
+    if(handoff==null)continue;
+    if(handoff.state=="HANDOFF_COMMITTED" || handoff.state=="WAIT_CURRENT_TURN_END" ||
+       handoff.state=="TARGET_READY" || handoff.state=="COMPOSER_CLAIMED" ||
+       handoff.state=="USER_RECEIPT_CONFIRMED" || handoff.state=="RESPONSE_BINDING" ||
+       handoff.state=="TURN_RUNNING" || handoff.state=="TERMINAL_OBSERVED") {
+     try { Publish(run.run_id,run.generation,handoff.message_id);count++; } catch {}
+    }
+   }
+  }
+  return count;
+ }
+
  public void Publish(string runId,long generation,string messageId) {
   var run=state.GetRun(runId);
   if(run.generation!=generation)throw new InvalidOperationException("stale_generation");
   var handoff=run.handoffs.Find(delegate(AutomationHandoff h){return h.message_id==messageId;});
   if(handoff==null)throw new InvalidOperationException("handoff_not_found");
-  if(handoff.state!="TARGET_READY" && handoff.state!="COMPOSER_CLAIMED")
-   throw new InvalidOperationException("handoff_not_ready_for_browser");
-  var command=new M1BrowserCommand {
-   id=handoff.message_id,run_id=run.run_id,generation=run.generation,seq=handoff.seq,
-   conversation_id=run.target.conversation_id,payload_hash=handoff.payload_hash,text=handoff.payload
-  };
+  var command=BuildCommand(run,handoff);
   lock(gate) {
    M1BrokerRecord existing;
    if(records.TryGetValue(command.id,out existing)) {
-    if(existing.command.payload_hash!=command.payload_hash || existing.command.conversation_id!=command.conversation_id)
+    if(existing.command.handoff_id!=command.handoff_id ||
+       existing.command.kind!=command.kind ||
+       existing.command.payload_hash!=command.payload_hash ||
+       existing.command.conversation_id!=command.conversation_id)
      throw new InvalidOperationException("browser_command_identity_conflict");
-    if(existing.retired) { existing.retired=false;existing.authorized=false;existing.leaseUntilUtc=DateTime.MinValue; }
+    if(existing.retired) {
+     existing.retired=false;
+     existing.authorized=false;
+     existing.leaseUntilUtc=DateTime.MinValue;
+     existing.command=command;
+    }
    } else records.Add(command.id,new M1BrokerRecord{command=command});
   }
   changed.Set();
@@ -122,6 +148,33 @@ public sealed class M1BrowserBroker : IDisposable {
   changed.Dispose();
  }
 
+ static M1BrowserCommand BuildCommand(AutomationRun run,AutomationHandoff h) {
+  string kind,suffix;
+  if(h.state=="HANDOFF_COMMITTED" || h.state=="WAIT_CURRENT_TURN_END") {
+   kind="gate_current_turn";suffix="gate";
+  } else if(h.state=="TARGET_READY" || h.state=="COMPOSER_CLAIMED") {
+   kind="send_handoff";suffix="send";
+  } else if(h.state=="USER_RECEIPT_CONFIRMED" || h.state=="RESPONSE_BINDING" ||
+            h.state=="TURN_RUNNING" || h.state=="TERMINAL_OBSERVED") {
+   if(String.IsNullOrWhiteSpace(h.provider_user_message_id))
+    throw new InvalidOperationException("response_observer_missing_user_receipt");
+   kind="observe_response";suffix="observe";
+  } else throw new InvalidOperationException("handoff_not_publishable: "+h.state);
+  return new M1BrowserCommand {
+   id=h.message_id+":"+suffix,
+   handoff_id=h.message_id,
+   kind=kind,
+   run_id=run.run_id,
+   generation=run.generation,
+   seq=h.seq,
+   conversation_id=run.target.conversation_id,
+   payload_hash=h.payload_hash,
+   text=kind=="send_handoff"?h.payload:"",
+   user_message_id=kind=="gate_current_turn"?h.source_user_message_id:h.provider_user_message_id,
+   response_turn_id=kind=="gate_current_turn"?h.source_response_turn_id:h.response_turn_id
+  };
+ }
+
  void AcceptLoop() {
   while(!stopping) {
    try {
@@ -139,6 +192,7 @@ public sealed class M1BrowserBroker : IDisposable {
   using(var stream=client.GetStream()) {
    HttpRequestData req=ReadRequest(stream);
    if(req==null)return;
+   if(!ValidHost(req.host)){WriteError(stream,403,"loopback_host_required",req.origin);return;}
    if(req.method=="OPTIONS") { Write(stream,204,new{},req.origin);return; }
    if(req.path=="/hello") {
     if(req.method!="GET"){WriteError(stream,405,"method_not_allowed",req.origin);return;}
@@ -191,24 +245,27 @@ public sealed class M1BrowserBroker : IDisposable {
   var body=JsonObject(req.body);
   string id=Get(body,"command_id"),conversation=Get(body,"conversation_id"),hash=Get(body,"payload_hash");
   string epoch=Get(body,"document_epoch");
-  if(String.IsNullOrWhiteSpace(epoch)||epoch.Length>160){WriteError(stream,400,"document_epoch_invalid",req.origin);return;}
+  if(String.IsNullOrWhiteSpace(epoch)||epoch.Length>200){WriteError(stream,400,"document_epoch_invalid",req.origin);return;}
   M1BrokerRecord rec;
   lock(gate) {
    if(!records.TryGetValue(id,out rec)||rec.retired){WriteError(stream,409,"command_not_active",req.origin);return;}
+   if(rec.command.kind!="send_handoff"){WriteError(stream,409,"command_not_sendable",req.origin);return;}
    if(rec.authorized){Write(stream,200,new{ok=true,existing=true},req.origin);return;}
    if(rec.command.conversation_id!=conversation||rec.command.payload_hash!=hash){WriteError(stream,409,"command_identity_mismatch",req.origin);return;}
   }
-  // Persist the conservative dispatch intent before the browser is allowed to click Send.
+
   var run=state.GetRun(rec.command.run_id);
-  var h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==id;});
+  var h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==rec.command.handoff_id;});
   if(h==null){WriteError(stream,409,"handoff_not_found",req.origin);return;}
-  if(h.state=="TARGET_READY")state.Advance(run.run_id,run.generation,id,"COMPOSER_CLAIMED","","");
+  if(h.state=="TARGET_READY")state.Advance(run.run_id,run.generation,h.message_id,"COMPOSER_CLAIMED","","");
   run=state.GetRun(rec.command.run_id);
-  h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==id;});
-  if(h.state=="COMPOSER_CLAIMED")state.Advance(run.run_id,run.generation,id,"SEND_AUTHORIZED","","");
+  h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==rec.command.handoff_id;});
+  if(h.state=="COMPOSER_CLAIMED")state.Advance(run.run_id,run.generation,h.message_id,"SEND_AUTHORIZED","","");
   run=state.GetRun(rec.command.run_id);
-  h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==id;});
-  if(h.state=="SEND_AUTHORIZED")state.Advance(run.run_id,run.generation,id,"SEND_DISPATCHED","","");
+  h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==rec.command.handoff_id;});
+  if(h.state=="SEND_AUTHORIZED")state.Advance(run.run_id,run.generation,h.message_id,"SEND_DISPATCHED","","");
+  else if(h.state!="SEND_DISPATCHED"){WriteError(stream,409,"handoff_not_authorizable: "+h.state,req.origin);return;}
+
   lock(gate){rec.authorized=true;rec.leaseUntilUtc=DateTime.MaxValue;}
   Write(stream,200,new{ok=true,dispatch_intent_durable=true},req.origin);
  }
@@ -219,36 +276,82 @@ public sealed class M1BrowserBroker : IDisposable {
   var ev=new M1BrowserEvent {
    command_id=Get(obj,"command_id"),kind=Get(obj,"kind"),conversation_id=Get(obj,"conversation_id"),
    document_epoch=Get(obj,"document_epoch"),payload_hash=Get(obj,"payload_hash"),
-   user_message_id=Get(obj,"user_message_id"),error=Get(obj,"error"),rebound=GetBool(obj,"rebound")
+   user_message_id=Get(obj,"user_message_id"),response_turn_id=Get(obj,"response_turn_id"),
+   error=Get(obj,"error"),rebound=GetBool(obj,"rebound")
   };
   if(ev.kind=="page_presence") { AddEvent(ev);Write(stream,200,new{ok=true},req.origin);return; }
+
   M1BrokerRecord rec;
   lock(gate) {
    if(!records.TryGetValue(ev.command_id,out rec)){WriteError(stream,409,"command_not_found",req.origin);return;}
    if(rec.command.conversation_id!=ev.conversation_id){WriteError(stream,409,"event_target_mismatch",req.origin);return;}
+   if(!String.IsNullOrEmpty(ev.payload_hash) && rec.command.payload_hash!=ev.payload_hash){WriteError(stream,409,"event_payload_mismatch",req.origin);return;}
   }
+
+  bool publishNext=false;
   try {
    var run=state.GetRun(rec.command.run_id);
-   var handoff=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==rec.command.id;});
-   if(handoff==null)throw new InvalidOperationException("handoff_not_found");
-   if(ev.kind=="composer_claimed") {
-    if(handoff.state=="TARGET_READY")state.Advance(run.run_id,run.generation,handoff.message_id,"COMPOSER_CLAIMED","","");
+   var h=run.handoffs.Find(delegate(AutomationHandoff x){return x.message_id==rec.command.handoff_id;});
+   if(h==null)throw new InvalidOperationException("handoff_not_found");
+
+   if(ev.kind=="source_bound") {
+    if(rec.command.kind!="gate_current_turn")throw new InvalidOperationException("source_event_wrong_command");
+    state.BindSourceTurn(run.run_id,run.generation,h.message_id,ev.user_message_id,ev.response_turn_id,ev.document_epoch);
+   } else if(ev.kind=="source_terminal") {
+    if(rec.command.kind!="gate_current_turn")throw new InvalidOperationException("source_event_wrong_command");
+    state.MarkSourceTerminal(run.run_id,run.generation,h.message_id,ev.user_message_id,ev.response_turn_id,ev.document_epoch);
+    Retire(rec);publishNext=true;
+   } else if(ev.kind=="source_superseded") {
+    if(rec.command.kind!="gate_current_turn")throw new InvalidOperationException("source_event_wrong_command");
+    state.CancelForHuman(run.run_id,run.generation,h.message_id,"newer user input superseded automatic baton");
+    Retire(rec);
+   } else if(ev.kind=="composer_claimed") {
+    if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
+    if(h.state=="TARGET_READY")state.Advance(run.run_id,run.generation,h.message_id,"COMPOSER_CLAIMED","","");
    } else if(ev.kind=="pre_send_failed") {
-    if(handoff.state=="TARGET_READY"||handoff.state=="COMPOSER_CLAIMED")
-     state.Advance(run.run_id,run.generation,handoff.message_id,"PRE_SEND_RETRY","",ev.error);
-    lock(gate){rec.retired=true;}
+    if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
+    if(h.state=="TARGET_READY"||h.state=="COMPOSER_CLAIMED")
+     state.Advance(run.run_id,run.generation,h.message_id,"PRE_SEND_RETRY","",ev.error);
+    Retire(rec);
    } else if(ev.kind=="delivered") {
-    if(handoff.state!="SEND_DISPATCHED")throw new InvalidOperationException("delivery_without_dispatch_intent");
-    state.Advance(run.run_id,run.generation,handoff.message_id,"USER_RECEIPT_CONFIRMED","",ev.error);
-    lock(gate){rec.retired=true;}
+    if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
+    if(h.state!="SEND_DISPATCHED")throw new InvalidOperationException("delivery_without_dispatch_intent");
+    state.ConfirmProviderReceipt(run.run_id,run.generation,h.message_id,ev.user_message_id,ev.document_epoch);
+    Retire(rec);publishNext=true;
    } else if(ev.kind=="ambiguous") {
-    if(handoff.state!="SEND_DISPATCHED")throw new InvalidOperationException("ambiguity_without_dispatch_intent");
-    state.Advance(run.run_id,run.generation,handoff.message_id,"AMBIGUOUS","",ev.error);
-    lock(gate){rec.retired=true;}
+    if(rec.command.kind!="send_handoff")throw new InvalidOperationException("send_event_wrong_command");
+    if(h.state!="SEND_DISPATCHED")throw new InvalidOperationException("ambiguity_without_dispatch_intent");
+    state.Advance(run.run_id,run.generation,h.message_id,"AMBIGUOUS","",ev.error);
+    Retire(rec);
+   } else if(ev.kind=="response_started") {
+    if(rec.command.kind!="observe_response")throw new InvalidOperationException("response_event_wrong_command");
+    state.BindResponseTurn(run.run_id,run.generation,h.message_id,ev.user_message_id,ev.response_turn_id,ev.document_epoch);
+   } else if(ev.kind=="turn_running") {
+    if(rec.command.kind!="observe_response")throw new InvalidOperationException("response_event_wrong_command");
+    state.MarkResponseEvidence(run.run_id,run.generation,h.message_id,ev.response_turn_id,ev.document_epoch,"TURN_RUNNING",ev.error);
+   } else if(ev.kind=="terminal_observed") {
+    if(rec.command.kind!="observe_response")throw new InvalidOperationException("response_event_wrong_command");
+    state.MarkResponseEvidence(run.run_id,run.generation,h.message_id,ev.response_turn_id,ev.document_epoch,"TERMINAL_OBSERVED",ev.error);
+   } else if(ev.kind=="terminal_confirmed") {
+    if(rec.command.kind!="observe_response")throw new InvalidOperationException("response_event_wrong_command");
+    state.MarkResponseEvidence(run.run_id,run.generation,h.message_id,ev.response_turn_id,ev.document_epoch,"TERMINAL_CONFIRMED",ev.error);
+    Retire(rec);
+   } else if(ev.kind=="response_superseded") {
+    if(rec.command.kind!="observe_response")throw new InvalidOperationException("response_event_wrong_command");
+    state.FailTerminal(run.run_id,run.generation,h.message_id,"provider response ownership superseded by newer user input");
+    Retire(rec);
    } else throw new InvalidOperationException("event_kind_invalid");
+
    AddEvent(ev);
    Write(stream,200,new{ok=true},req.origin);
+   if(publishNext) {
+    try { Publish(run.run_id,run.generation,h.message_id); } catch {}
+   }
   } catch(Exception e) { WriteError(stream,409,e.Message,req.origin); }
+ }
+
+ void Retire(M1BrokerRecord rec) {
+  lock(gate){rec.retired=true;rec.leaseUntilUtc=DateTime.MaxValue;}
  }
 
  void AddEvent(M1BrowserEvent ev) {
@@ -267,6 +370,10 @@ public sealed class M1BrowserBroker : IDisposable {
   return String.Equals(req.authorization,expected,StringComparison.Ordinal);
  }
 
+ bool ValidHost(string host) {
+  return String.Equals(host,"127.0.0.1:"+port,StringComparison.OrdinalIgnoreCase);
+ }
+
  static bool ValidExtensionOrigin(string origin) {
   if(String.IsNullOrWhiteSpace(origin)||origin.Length>200)return false;
   Uri uri;
@@ -274,7 +381,7 @@ public sealed class M1BrowserBroker : IDisposable {
  }
 
  sealed class HttpRequestData {
-  public string method,path,query,body,origin,authorization,protocol;
+  public string method,path,query,body,origin,authorization,protocol,host;
  }
 
  static HttpRequestData ReadRequest(NetworkStream stream) {
@@ -297,7 +404,8 @@ public sealed class M1BrowserBroker : IDisposable {
    method=first[0].ToUpperInvariant(),path=path,query=query,body=Encoding.UTF8.GetString(bodyBytes),
    origin=headers.TryGetValue("Origin",out value)?value:"",
    authorization=headers.TryGetValue("Authorization",out value)?value:"",
-   protocol=headers.TryGetValue("X-PCBridge-Protocol",out value)?value:""
+   protocol=headers.TryGetValue("X-PCBridge-Protocol",out value)?value:"",
+   host=headers.TryGetValue("Host",out value)?value:""
   };
  }
 
