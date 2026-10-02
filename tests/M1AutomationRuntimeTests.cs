@@ -23,7 +23,7 @@ static class M1AutomationRuntimeTests {
    const string session="anonymous-openai-session-runtime-123";
    const string conversation="12345678-abcd-4abc-8abc-123456789012";
 
-   using(var runtime=new M1AutomationRuntime(root,browser,extension)) {
+   using(var runtime=new M1AutomationRuntime(root,browser,extension,new[]{0})) {
     var status=runtime.Start();
     Check(status.started && status.broker_port>0,"runtime starts loopback broker");
     Check(status.browser_runtime_available && status.companion_ready,"runtime sees isolated provider prerequisites");
@@ -46,11 +46,17 @@ static class M1AutomationRuntimeTests {
     var duplicate=runtime.Handoff(session,"work","next","verified","none");
     Check(duplicate.existing && duplicate.message_id==queued.message_id,"repeated tool call is idempotent");
 
+    var byRun=runtime.HandoffByRun(run.run_id,run.generation,"work","next","verified","none");
+    Check(byRun.existing && byRun.message_id==queued.message_id,"successor can resume by run_id and generation without raw session id");
+    Expect(delegate {
+     runtime.HandoffByRun(run.run_id,run.generation+1,"work","next","verified","none");
+    },"stale_generation","run-fenced successor rejects wrong generation");
+
     // Restart runtime: durable handoff should be republished, not duplicated.
     string runId=run.run_id;
     long generation=run.generation;
     runtime.Dispose();
-    using(var reopened=new M1AutomationRuntime(root,browser,extension)) {
+    using(var reopened=new M1AutomationRuntime(root,browser,extension,new[]{0})) {
      var recovered=reopened.Start();
      Check(recovered.recoverable_published>=1,"restart republishes recoverable source gate");
      var sameRun=reopened.ActiveRun(session);
