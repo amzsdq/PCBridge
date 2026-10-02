@@ -315,6 +315,7 @@ sealed class MainWindow:Form {
   remove=Button("작업 권한",375,215,()=>new PermissionWindow().ShowDialog(this));
   Button("복구함 / 삭제 기록",25,320,()=>new RecoveryWindow().ShowDialog(this));
   Button("데이터 위치",200,320,()=>MessageBox.Show(this,"설정·감사 로그·복구함 위치:\r\n"+Core.Root+"\r\n복구함 내용이 있으므로 자동 완전 삭제는 제공하지 않습니다."));
+  Button("자동화 채팅 연결",375,320,()=>new M1BindingWindow().ShowDialog(this));
   Button("도구 권한 / 하드락",25,375,()=>new DesktopWindow().ShowDialog(this));
   Button("오픈소스 라이선스",200,375,()=>System.Diagnostics.Process.Start("notepad.exe",Core.Q(Path.Combine(Core.Root,"THIRD_PARTY_NOTICES.txt"))));
   auto.Text="Windows 로그인 시 자동 시작";auto.SetBounds(25,269,330,30);Controls.Add(auto);
