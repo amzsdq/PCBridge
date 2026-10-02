@@ -300,6 +300,61 @@
     return responseSnapshot(latest.id,expectedTurnId);
   }
 
+  function parseRetryAfterSeconds(value) {
+    const line=String(value || '').replace(/\s+/g,' ').toLowerCase();
+    const match=/(\d{1,4})\s*(seconds?|secs?|초|minutes?|mins?|분)\b/i.exec(line);
+    if (!match) return 0;
+    const amount=Math.max(0,Math.min(21600,Number(match[1]) || 0));
+    return /min|분/i.test(match[2]) ? Math.min(21600,amount*60) : amount;
+  }
+
+  function providerIssue() {
+    return safe(() => {
+      if (globalThis.navigator && navigator.onLine===false)
+        return {kind:'offline',error:'browser_offline',retry_after_seconds:0};
+
+      const path=String(location.pathname || '').toLowerCase();
+      if (/\/(?:auth|login|signin)(?:\/|$)/.test(path))
+        return {kind:'auth',error:'chatgpt_auth_route',retry_after_seconds:0};
+
+      const selectors=[
+        '[role="alert"]',
+        '[data-testid*="error" i]',
+        '[data-testid*="rate" i]',
+        '[data-testid*="limit" i]',
+        '[aria-live="assertive"]'
+      ].join(',');
+      const notices=[...document.querySelectorAll(selectors)]
+        .filter(node => !node.closest?.(`${TURN},.markdown,[contenteditable="true"],[hidden],[aria-hidden="true"]`))
+        .map(node => normalized(node.textContent))
+        .filter(Boolean);
+      const text=notices.join(' | ').slice(0,4000);
+      if (!text) return null;
+
+      if (/(?:too many requests|rate limit|usage limit|message limit|reached (?:your|the) limit|요청.{0,12}너무.{0,8}많|사용.{0,8}한도|메시지.{0,8}한도)/i.test(text))
+        return {kind:'rate_limited',error:text.slice(0,500),retry_after_seconds:parseRetryAfterSeconds(text)};
+
+      if (/(?:sign in|log in|authentication required|verify (?:that )?you(?:'re| are) human|captcha|로그인|인증.{0,8}필요|사람.{0,8}확인)/i.test(text))
+        return {kind:'auth',error:text.slice(0,500),retry_after_seconds:0};
+
+      if (/(?:network error|connection interrupted|message delivery timed out|error in message stream|resume stream unavailable|네트워크.{0,8}(?:오류|에러)|연결.{0,8}(?:중단|끊)|메시지.{0,8}시간.{0,8}초과)/i.test(text))
+        return {kind:'load_failed',error:text.slice(0,500),retry_after_seconds:0};
+
+      return null;
+    }, null);
+  }
+
+  function reconcileReceipt(value) {
+    return safe(() => {
+      const expected=compact(value);
+      if (!expected) return {status:'invalid'};
+      const matches=userMessages().filter(row => compact(row.text)===expected);
+      if (matches.length===1) return {status:'found',user_message_id:matches[0].id};
+      if (matches.length>1) return {status:'conflict',count:matches.length};
+      return {status:'not_found'};
+    }, {status:'unreadable'});
+  }
+
   function insertPrompt(value, failure=()=>undefined) {
     const box=composer();
     const reject=reason => { safe(() => failure(reason), undefined); return false; };
@@ -411,6 +466,6 @@
   globalThis.PCBridgeChatGPTDOM=Object.freeze({
     conversationFromPath,conversationId,composer,composerReady,composerVisible,composerWritable,
     generating,sendButton,logicalTurns,messagesForTurn,userMessages,responseSnapshot,latestUserResponseSnapshot,
-    insertPrompt,captureDraft,prepareSend,dispatchPrepared,compact
+    providerIssue,reconcileReceipt,insertPrompt,captureDraft,prepareSend,dispatchPrepared,compact
   });
 })();
